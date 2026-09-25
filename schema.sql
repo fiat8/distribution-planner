@@ -82,7 +82,7 @@ create table actual_delivery (
 -- 7) Stock ต้นทาง (snapshot ตามวันที่อัพโหลด)
 -- ============================================================
 create table stock_snapshot (
-    item_id        text not null references item_master(item_id),
+    item_id        text not null references item_master(item_id) on delete cascade,
     snapshot_date  date not null,
     available_qty  numeric not null,
     primary key (item_id, snapshot_date)
