@@ -14,22 +14,32 @@ create table item_master (
 );
 
 -- ============================================================
--- 2) Demand: ยอดต้องการต่อสัปดาห์ ต่อสินค้า ต่อปลายทาง
+-- 2) Plant Master: PLANT CODE -> ชื่อคลัง/โรงงาน
+-- ============================================================
+create table plant_master (
+    plant_code  text primary key,
+    plant_name  text not null
+);
+
+-- ============================================================
+-- 3) Demand: ยอดต้องการต่อสัปดาห์ ต่อสินค้า ต่อต้นทาง-ปลายทาง
+--    origin_plant / destination เก็บเป็น PLANT CODE (join กับ plant_master เพื่อโชว์ชื่อ)
 --    day_ratio ปรับได้จากหน้า UI (default เกลี่ยเท่ากันทุกวัน active)
 -- ============================================================
 create table demand (
-    demand_id   uuid primary key default gen_random_uuid(),
-    item_id     text not null references item_master(item_id),
-    destination text not null,
-    week_id     text not null,                         -- เช่น '2026-W40'
-    weekly_qty  numeric not null check (weekly_qty >= 0),
-    day_ratio   numeric[] not null default '{0.2,0.2,0.2,0.2,0.2,0}',  -- [จ,อ,พ,พฤ,ศ,ส]
-    created_at  timestamptz default now(),
+    demand_id     uuid primary key default gen_random_uuid(),
+    item_id       text not null references item_master(item_id),
+    origin_plant  text not null,
+    destination   text not null,
+    week_id       text not null,                         -- เช่น 'W40'
+    weekly_qty    numeric not null check (weekly_qty >= 0),
+    day_ratio     numeric[] not null default '{20,20,20,20,20,0}',  -- [จ,อ,พ,พฤ,ศ,ส] เก็บเป็น 0-100
+    created_at    timestamptz default now(),
     unique (item_id, destination, week_id)
 );
 
 -- ============================================================
--- 3) Master Plan: baseline หลัง publish — ห้ามแก้ทับ
+-- 4) Master Plan: baseline หลัง publish — ห้ามแก้ทับ
 -- ============================================================
 create table master_plan (
     plan_id       uuid primary key default gen_random_uuid(),
@@ -42,7 +52,7 @@ create table master_plan (
 );
 
 -- ============================================================
--- 4) Revised Plan: การปรับแผน อ้างอิงกลับ master_plan เสมอ
+-- 5) Revised Plan: การปรับแผน อ้างอิงกลับ master_plan เสมอ
 --    เช่น ย้าย 500 เคส จากศุกร์ไปพุธ = insert 2 แถว (วันละแถว)
 -- ============================================================
 create table revised_plan (
@@ -56,7 +66,7 @@ create table revised_plan (
 );
 
 -- ============================================================
--- 5) Actual Delivery: นำเข้าจากไฟล์ STO เพื่อเช็ค performance
+-- 6) Actual Delivery: นำเข้าจากไฟล์ STO เพื่อเช็ค performance
 -- ============================================================
 create table actual_delivery (
     delivery_id   uuid primary key default gen_random_uuid(),
@@ -69,7 +79,7 @@ create table actual_delivery (
 );
 
 -- ============================================================
--- 6) Stock ต้นทาง (snapshot ตามวันที่อัพโหลด)
+-- 7) Stock ต้นทาง (snapshot ตามวันที่อัพโหลด)
 -- ============================================================
 create table stock_snapshot (
     item_id        text not null references item_master(item_id),
