@@ -8,8 +8,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: huggingface/hub-sync@v0.1.0
-        with:
-          github_repo_id: ${{ github.repository }}
-          huggingface_repo_id: <fiat8>/<fiat8>
-          hf_token: ${{ secrets.HF_TOKEN }}
+
+      - name: Install hf CLI
+        run: pip install -U "huggingface_hub[cli]"
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          hf upload <fiat8>/<fiat8> . . \
+            --repo-type space \
+            --token "$HF_TOKEN" \
+            --exclude ".git/*" \
+            --exclude ".github/*" \
+            --exclude "__pycache__/*" \
+            --commit-message "Sync from GitHub"
