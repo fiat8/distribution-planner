@@ -33,7 +33,7 @@ create table demand (
 -- ============================================================
 create table master_plan (
     plan_id       uuid primary key default gen_random_uuid(),
-    demand_id     uuid not null references demand(demand_id),
+    demand_id     uuid not null references demand(demand_id) on delete cascade,
     day_of_week   smallint not null check (day_of_week between 0 and 5),  -- 0=จ..5=ส
     planned_case  numeric not null,
     planned_trip  integer not null,
@@ -47,7 +47,7 @@ create table master_plan (
 -- ============================================================
 create table revised_plan (
     revision_id   uuid primary key default gen_random_uuid(),
-    plan_id       uuid not null references master_plan(plan_id),
+    plan_id       uuid not null references master_plan(plan_id) on delete cascade,
     day_of_week   smallint not null check (day_of_week between 0 and 5),
     revised_case  numeric not null,
     revised_trip  integer not null,
@@ -60,7 +60,7 @@ create table revised_plan (
 -- ============================================================
 create table actual_delivery (
     delivery_id   uuid primary key default gen_random_uuid(),
-    demand_id     uuid not null references demand(demand_id),
+    demand_id     uuid not null references demand(demand_id) on delete cascade,
     delivery_date date not null,
     actual_case   numeric not null default 0,
     actual_trip   integer not null default 0,
