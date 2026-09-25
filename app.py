@@ -28,11 +28,17 @@ def get_client() -> Client:
     return create_client(url, key)
 
 
-def default_week_id() -> str:
-    """สัปดาห์ถัดไปแบบ ISO เช่น 2026-W41 — ใช้เป็นค่าเริ่มต้นตอนวางแผนวันศุกร์"""
-    d = dt.date.today() + dt.timedelta(days=7)
-    iso = d.isocalendar()
-    return f"{iso[0]}-W{iso[1]:02d}"
+def default_week_start() -> dt.date:
+    """วันจันทร์ถัดไป — ใช้เป็นค่าเริ่มต้นตอนวางแผนวันศุกร์สำหรับสัปดาห์หน้า"""
+    today = dt.date.today()
+    days_ahead = (7 - today.weekday()) % 7
+    if days_ahead == 0:
+        days_ahead = 7
+    return today + dt.timedelta(days=days_ahead)
+
+
+def default_week_number() -> int:
+    return default_week_start().isocalendar()[1]
 
 
 @st.cache_data(ttl=30)
@@ -176,20 +182,22 @@ def reset_week(week_id: str, demand_ids: list[str]):
 # UI
 # ============================================================
 st.title("🚚 ระบบวางแผนกระจายสินค้า")
-st.caption("Master Plan ทุกวันศุกร์ → Monitor รายวัน → Revise → Dashboard | ข้อมูลทั้งหมดเก็บถาวรใน Supabase")
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["1. Input & คำนวณ", "2. Dashboard", "3. Monitor / Edit", "4. Transactions"]
-)
+tab1, tab2, tab3, tab4 = st.tabs(["Input data", "Dashboard", "Edit Plan", "Transaction"])
 
 # ---------------------------------------------------------------
 # TAB 1: Input & คำนวณ
 # ---------------------------------------------------------------
 with tab1:
-    st.subheader("นำเข้าไฟล์ Master")
+    st.subheader("Input Master file")
     st.caption('ไฟล์ Excel ไฟล์เดียว 3 ชีท: "Item Master", "Demand", "Stock" — ตาม Master_Input_template.xlsx')
 
-    week_id = st.text_input("สัปดาห์ที่วางแผน (week_id)", value=default_week_id())
+    wk_col1, wk_col2 = st.columns(2)
+    week_number = wk_col1.number_input("Week Number", min_value=1, step=1, value=default_week_number())
+    week_start = wk_col2.date_input("Week Start Date (Monday)", value=default_week_start())
+    week_id = f"W{int(week_number)}"
+    week_dates = [week_start + dt.timedelta(days=i) for i in range(6)]
+    day_headers = [f"{d.strftime('%a')} {d.day}/{d.month}" for d in week_dates]
 
     uploaded = st.file_uploader("เลือกไฟล์ Master Input (.xlsx)", type=["xlsx"])
     if uploaded is not None:
@@ -211,18 +219,22 @@ with tab1:
         except Exception as e:  # noqa: BLE001
             st.error(f"อ่านไฟล์ไม่สำเร็จ ตรวจชื่อชีทและคอลัมน์ให้ตรง template — {e}")
 
-    st.divider()
-    st.subheader("Item Master")
     items_df = fetch_items()
-    st.dataframe(items_df, use_container_width=True, hide_index=True)
 
-    st.subheader(f"Demand + สัดส่วนวัน — สัปดาห์ {week_id}")
+    st.subheader("Demand Allocations")
     demand_df = fetch_demand(week_id)
 
     if demand_df.empty:
         st.info("ยังไม่มี Demand สำหรับสัปดาห์นี้ — นำเข้าไฟล์ก่อนด้านบน")
     else:
         item_lookup = items_df.set_index("item_id")["description"].to_dict() if not items_df.empty else {}
+
+        header_cols = st.columns([3, 1, 1, 1, 1, 1, 1, 1])
+        header_cols[0].markdown("**Product**")
+        for i, h in enumerate(day_headers):
+            header_cols[i + 1].markdown(f"**{h}**")
+        header_cols[7].markdown("**Total %**")
+
         edited_ratios: dict[str, list[int]] = {}
         for _, row in demand_df.iterrows():
             name = item_lookup.get(row["item_id"], row["item_id"])
@@ -230,10 +242,10 @@ with tab1:
             cols = st.columns([3, 1, 1, 1, 1, 1, 1, 1])
             cols[0].markdown(f"**{name}**  \n{row['destination']} · {int(row['weekly_qty']):,} เคส/สัปดาห์")
             new_ratio = []
-            for i, day in enumerate(DAY_LABELS):
+            for i, h in enumerate(day_headers):
                 v = cols[i + 1].number_input(
-                    day, min_value=0, max_value=100, value=int(ratio[i]),
-                    key=f"ratio_{row['demand_id']}_{i}", label_visibility="visible",
+                    h, min_value=0, max_value=100, value=int(ratio[i]),
+                    key=f"ratio_{row['demand_id']}_{i}", label_visibility="collapsed",
                 )
                 new_ratio.append(v)
             total_pct = sum(new_ratio)
@@ -266,7 +278,7 @@ with tab1:
     plan_df = fetch_master_plan_rows(demand_ids)
     if not plan_df.empty:
         st.divider()
-        st.subheader("Show Array after Cal.")
+        st.subheader("Master Plan")
         pivot = plan_df.pivot(index="demand_id", columns="day_of_week", values="planned_case")
         pivot.columns = [DAY_LABELS[c] for c in pivot.columns]
         pivot["รวม"] = pivot.sum(axis=1)
@@ -282,7 +294,7 @@ with tab1:
             mime="text/csv",
         )
 
-    with st.expander("⚠️ Reset ข้อมูลสัปดาห์นี้"):
+    with st.expander("⚠️ Reset data"):
         st.caption("ลบ Demand + Master Plan + Revision ทั้งหมดของสัปดาห์นี้ ใช้เมื่อต้องการเริ่มใหม่เท่านั้น")
         if st.button("Reset data", type="secondary"):
             reset_week(week_id, demand_ids)
