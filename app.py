@@ -13,7 +13,7 @@ from supabase import Client, create_client
 
 from engine import DAYS, allocate_cases, cases_to_trips
 
-st.set_page_config(page_title="ระบบวางแผนกระจายสินค้า", page_icon="🚚", layout="wide")
+st.set_page_config(page_title="My Distributions' Plan", page_icon="🚚", layout="wide")
 
 DAY_LABELS = DAYS  # ["จ","อ","พ","พฤ","ศ","ส"]
 
@@ -193,7 +193,7 @@ def reset_week(week_id: str, demand_ids: list[str]):
 # ============================================================
 # UI
 # ============================================================
-st.title("🚚 ระบบวางแผนกระจายสินค้า")
+st.title("🚚 My Distributions' Plan")
 
 tab1, tab2, tab3, tab4 = st.tabs(["Input data", "Dashboard", "Edit Plan", "Transaction"])
 
@@ -362,6 +362,11 @@ with tab1:
         if st.button("Reset data", type="secondary"):
             reset_week(week_id, demand_ids)
             clear_caches()
+            for k in list(st.session_state.keys()):
+                if k.startswith(("demand_editor_", "editor_", "reason_", "ratio_")) or k in (
+                    "dash_week", "mon_week", "tx_week",
+                ):
+                    del st.session_state[k]
             st.success("ลบข้อมูลสัปดาห์นี้แล้ว")
             st.rerun()
 
