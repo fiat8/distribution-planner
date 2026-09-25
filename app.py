@@ -185,11 +185,12 @@ def insert_actual(df: pd.DataFrame):
 
 def reset_all():
     """ปุ่ม Reset — ล้างข้อมูลทั้งหมดในเว็บแอปทุกสัปดาห์ (demand จะ cascade ลบ master_plan/revised_plan/
-    actual_delivery ให้เอง) รวมถึง Item Master, Plant Master, Stock ด้วย เพื่อไม่ให้มีข้อมูลเก่าค้างในแท็บ/ตัวกรองอื่น"""
+    actual_delivery ให้เอง) รวมถึง Item Master, Plant Master, Stock ด้วย เพื่อไม่ให้มีข้อมูลเก่าค้างในแท็บ/ตัวกรองอื่น
+    ลำดับสำคัญ: ต้องลบ stock_snapshot ก่อน item_master เพราะมี FK อ้างอิงกันอยู่"""
     get_client().table("demand").delete().neq("demand_id", "00000000-0000-0000-0000-000000000000").execute()
+    get_client().table("stock_snapshot").delete().neq("item_id", "").execute()
     get_client().table("item_master").delete().neq("item_id", "").execute()
     get_client().table("plant_master").delete().neq("plant_code", "").execute()
-    get_client().table("stock_snapshot").delete().neq("item_id", "").execute()
 
 
 # ============================================================
