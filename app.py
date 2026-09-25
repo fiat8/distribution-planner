@@ -193,7 +193,10 @@ def reset_week(week_id: str, demand_ids: list[str]):
 # ============================================================
 # UI
 # ============================================================
-st.title("🚚 My Distributions' Plan")
+st.markdown(
+    "<h1 style='text-align:center; font-weight:800; text-decoration:underline;'>🚚 My Distributions' Plan</h1>",
+    unsafe_allow_html=True,
+)
 
 tab1, tab2, tab3, tab4 = st.tabs(["Input data", "Dashboard", "Edit Plan", "Transaction"])
 
