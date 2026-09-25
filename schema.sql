@@ -27,14 +27,15 @@ create table plant_master (
 --    day_ratio ปรับได้จากหน้า UI (default เกลี่ยเท่ากันทุกวัน active)
 -- ============================================================
 create table demand (
-    demand_id     uuid primary key default gen_random_uuid(),
-    item_id       text not null references item_master(item_id),
-    origin_plant  text not null,
-    destination   text not null,
-    week_id       text not null,                         -- เช่น 'W40'
-    weekly_qty    numeric not null check (weekly_qty >= 0),
-    day_ratio     numeric[] not null default '{20,20,20,20,20,0}',  -- [จ,อ,พ,พฤ,ศ,ส] เก็บเป็น 0-100
-    created_at    timestamptz default now(),
+    demand_id       uuid primary key default gen_random_uuid(),
+    item_id         text not null references item_master(item_id),
+    origin_plant    text not null,
+    destination     text not null,
+    week_id         text not null,                         -- เช่น 'W40'
+    week_start_date date not null,                          -- วันจันทร์ของสัปดาห์นั้น (ใช้คำนวณวันที่จริงย้อนหลังได้)
+    weekly_qty      numeric not null check (weekly_qty >= 0),
+    day_ratio       numeric[] not null default '{20,20,20,20,20,0}',  -- [จ,อ,พ,พฤ,ศ,ส] เก็บเป็น 0-100
+    created_at      timestamptz default now(),
     unique (item_id, destination, week_id)
 );
 
