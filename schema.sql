@@ -105,3 +105,13 @@ left join lateral (
     order by revised_at desc
     limit 1
 ) rp on true;
+
+-- Supabase project นี้เปิด RLS อัตโนมัติให้ตารางใหม่ทุกตัว (เจอปัญหานี้มาแล้ว 2 รอบ) —
+-- ปิดไว้ทั้งหมดเพราะเป็นแอพคนเดียวใช้ ไม่ต้องมี row-level access control
+alter table item_master disable row level security;
+alter table plant_master disable row level security;
+alter table demand disable row level security;
+alter table master_plan disable row level security;
+alter table revised_plan disable row level security;
+alter table actual_delivery disable row level security;
+alter table stock_snapshot disable row level security;
