@@ -330,9 +330,29 @@ with tab1:
             for i in pivot.index
         ]
         st.dataframe(pivot, use_container_width=True)
+
+        export_rows = []
+        for _, r in plan_df.iterrows():
+            case_qty = r["planned_case"]
+            if case_qty <= 0:
+                continue
+            d_row = d_idx.loc[r["demand_id"]]
+            del_date = week_dates[int(r["day_of_week"])]
+            del_date_str = f"{del_date.day:02d}.{del_date.month}.{del_date.year}"
+            export_rows.append([
+                d_row["origin_plant"],
+                d_row["destination"],
+                d_row["item_id"],
+                case_qty,
+                "",
+                del_date_str,
+            ])
+        export_df = pd.DataFrame(
+            export_rows, columns=["Plant", "Plant", "Material", "Quantity", "Unit", "Del.date"]
+        )
         st.download_button(
             "Export transaction (CSV)",
-            pivot.to_csv().encode("utf-8-sig"),
+            export_df.to_csv(index=False).encode("utf-8-sig"),
             file_name=f"master_plan_{week_id}.csv",
             mime="text/csv",
         )
