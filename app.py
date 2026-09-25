@@ -13,7 +13,7 @@ from supabase import Client, create_client
 
 from engine import DAYS, allocate_cases, cases_to_trips
 
-st.set_page_config(page_title="My Distributions' Plan", page_icon="🚚", layout="wide")
+st.set_page_config(page_title="My Distributions' Plan", layout="wide")
 
 DAY_LABELS = DAYS  # ["จ","อ","พ","พฤ","ศ","ส"]
 
@@ -183,18 +183,36 @@ def insert_actual(df: pd.DataFrame):
     get_client().table("actual_delivery").insert(records).execute()
 
 
-def reset_week(week_id: str, demand_ids: list[str]):
-    """ปุ่ม Reset ตาม non-functional requirement — ลบ master_plan (cascade revised_plan) ของสัปดาห์นี้"""
-    if demand_ids:
-        get_client().table("master_plan").delete().in_("demand_id", demand_ids).execute()
-    get_client().table("demand").delete().eq("week_id", week_id).execute()
+def reset_all():
+    """ปุ่ม Reset — ล้างข้อมูลทั้งหมดในเว็บแอปทุกสัปดาห์ (demand จะ cascade ลบ master_plan/revised_plan/
+    actual_delivery ให้เอง) รวมถึง Item Master, Plant Master, Stock ด้วย เพื่อไม่ให้มีข้อมูลเก่าค้างในแท็บ/ตัวกรองอื่น"""
+    get_client().table("demand").delete().neq("demand_id", "00000000-0000-0000-0000-000000000000").execute()
+    get_client().table("item_master").delete().neq("item_id", "").execute()
+    get_client().table("plant_master").delete().neq("plant_code", "").execute()
+    get_client().table("stock_snapshot").delete().neq("item_id", "").execute()
 
 
 # ============================================================
 # UI
 # ============================================================
 st.markdown(
-    "<h1 style='text-align:center; font-weight:800; text-decoration:underline;'>🚚 My Distributions' Plan</h1>",
+    "<h1 style='text-align:center; font-weight:800; text-decoration:underline;'>My Distributions' Plan</h1>",
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <style>
+    .stTabs [data-baseweb="tab-list"] {
+        width: 100%;
+        justify-content: center;
+    }
+    .stTabs [data-baseweb="tab"] {
+        flex: 1;
+        justify-content: center;
+    }
+    </style>
+    """,
     unsafe_allow_html=True,
 )
 
@@ -361,16 +379,16 @@ with tab1:
         )
 
     with st.expander("⚠️ Reset data"):
-        st.caption("ลบ Demand + Master Plan + Revision ทั้งหมดของสัปดาห์นี้ ใช้เมื่อต้องการเริ่มใหม่เท่านั้น")
+        st.caption("ลบข้อมูลทั้งหมดในเว็บแอป ทุกสัปดาห์ (Demand, Master Plan, Revision, Item Master, Plant Master, Stock) — ใช้เมื่อต้องการเริ่มใหม่ทั้งระบบเท่านั้น")
         if st.button("Reset data", type="secondary"):
-            reset_week(week_id, demand_ids)
+            reset_all()
             clear_caches()
             for k in list(st.session_state.keys()):
                 if k.startswith(("demand_editor_", "editor_", "reason_", "ratio_")) or k in (
                     "dash_week", "mon_week", "tx_week",
                 ):
                     del st.session_state[k]
-            st.success("ลบข้อมูลสัปดาห์นี้แล้ว")
+            st.success("ลบข้อมูลทั้งหมดแล้ว")
             st.rerun()
 
 # ---------------------------------------------------------------
