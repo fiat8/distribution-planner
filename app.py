@@ -41,6 +41,20 @@ def default_week_number() -> int:
     return default_week_start().isocalendar()[1]
 
 
+def compute_day_headers(week_start: dt.date) -> list[str]:
+    dates = [week_start + dt.timedelta(days=i) for i in range(6)]
+    return [f"{d.strftime('%a')} {d.day}/{d.month}" for d in dates]
+
+
+def pivot_val(pivot_df: pd.DataFrame, idx, col) -> int:
+    """อ่านค่าจาก pivot table อย่างปลอดภัย คืน 0 ถ้าไม่มีแถว/คอลัมน์นี้ หรือเป็น NaN"""
+    if idx in pivot_df.index and col in pivot_df.columns:
+        v = pivot_df.loc[idx, col]
+        if pd.notna(v):
+            return int(v)
+    return 0
+
+
 @st.cache_data(ttl=30)
 def fetch_items() -> pd.DataFrame:
     res = get_client().table("item_master").select("*").order("item_id").execute()
@@ -136,11 +150,14 @@ def upsert_plants(df: pd.DataFrame):
     get_client().table("plant_master").upsert(records, on_conflict="plant_code").execute()
 
 
-def upsert_demand(df: pd.DataFrame, week_id: str):
+def upsert_demand(df: pd.DataFrame, week_id: str, week_start: dt.date):
     df = df.copy()
     df["week_id"] = week_id
+    df["week_start_date"] = week_start.isoformat()
     df["day_ratio"] = [[20, 20, 20, 20, 20, 0]] * len(df)  # default เท่ากันทุกวัน active — ปรับได้ในแอพ
-    records = df[["item_id", "origin_plant", "destination", "week_id", "weekly_qty", "day_ratio"]].to_dict("records")
+    records = df[
+        ["item_id", "origin_plant", "destination", "week_id", "week_start_date", "weekly_qty", "day_ratio"]
+    ].to_dict("records")
     get_client().table("demand").upsert(records, on_conflict="item_id,destination,week_id").execute()
 
 
@@ -230,8 +247,7 @@ with tab1:
     week_number = wk_col1.number_input("Week Number", min_value=1, step=1, value=default_week_number())
     week_start = wk_col2.date_input("Week Start Date (Monday)", value=default_week_start())
     week_id = f"W{int(week_number)}"
-    week_dates = [week_start + dt.timedelta(days=i) for i in range(6)]
-    day_headers = [f"{d.strftime('%a')} {d.day}/{d.month}" for d in week_dates]
+    day_headers = compute_day_headers(week_start)
 
     uploaded = st.file_uploader("Select Master file", type=["xlsx"])
     if uploaded is not None:
@@ -262,7 +278,7 @@ with tab1:
             if st.button("Import", type="primary"):
                 upsert_plants(plants_df_new)
                 upsert_items(items_df_new)
-                upsert_demand(demand_df_new, week_id)
+                upsert_demand(demand_df_new, week_id, week_start)
                 upsert_stock(stock_df)
                 clear_caches()
                 st.success(
@@ -359,7 +375,7 @@ with tab1:
             if case_qty <= 0:
                 continue
             d_row = d_idx.loc[r["demand_id"]]
-            del_date = week_dates[int(r["day_of_week"])]
+            del_date = week_start + dt.timedelta(days=int(r["day_of_week"]))
             del_date_str = f"{del_date.day:02d}.{del_date.month}.{del_date.year}"
             export_rows.append([
                 d_row["origin_plant"],
@@ -457,13 +473,13 @@ with tab2:
         st.caption("แก้ไขแผนได้ที่แท็บ Edit Plan")
 
 # ---------------------------------------------------------------
-# TAB 3: Monitor / Edit
+# TAB 3: Edit Plan
 # ---------------------------------------------------------------
 with tab3:
-    st.subheader("SHOW array เดิม — อ้างอิง Master, Edit ได้")
+    st.subheader("Adjust Plan")
     weeks = fetch_week_ids()
     if not weeks:
-        st.info("ยังไม่มีข้อมูล — เริ่มที่แท็บ 1 ก่อน")
+        st.info("ยังไม่มีข้อมูล — เริ่มที่แท็บ Input data ก่อน")
     else:
         mon_week = st.selectbox("สัปดาห์", weeks, key="mon_week")
         d_df = fetch_demand(mon_week)
@@ -478,75 +494,77 @@ with tab3:
         else:
             item_lookup = i_df.set_index("item_id")["description"].to_dict() if not i_df.empty else {}
             plant_lookup = p_df.set_index("plant_code")["plant_name"].to_dict() if not p_df.empty else {}
-            d_lookup = d_df.set_index("demand_id")
+            d_idx = d_df.set_index("demand_id")
 
-            label_map = {
-                did: (
-                    f"{item_lookup.get(d_lookup.loc[did, 'item_id'], did)} — "
-                    f"{plant_lookup.get(d_lookup.loc[did, 'origin_plant'], d_lookup.loc[did, 'origin_plant'])} → "
-                    f"{plant_lookup.get(d_lookup.loc[did, 'destination'], d_lookup.loc[did, 'destination'])}"
-                )
-                for did in demand_ids
-            }
-            sel_label = st.selectbox("รายการ (สินค้า + ปลายทาง)", list(label_map.values()))
-            sel_did = [k for k, v in label_map.items() if v == sel_label][0]
+            mon_week_start = pd.to_datetime(d_df["week_start_date"].iloc[0]).date()
+            mon_day_headers = compute_day_headers(mon_week_start)
 
-            cur_row = cur_df[cur_df["demand_id"] == sel_did].set_index("day_of_week")
-            cur_case = [int(cur_row.loc[d, "current_case"]) if d in cur_row.index else 0 for d in range(6)]
-            plan_row = plan_df[plan_df["demand_id"] == sel_did].set_index("day_of_week")
-            master_case = [int(plan_row.loc[d, "planned_case"]) if d in plan_row.index else 0 for d in range(6)]
+            cur_pivot = cur_df.pivot(index="demand_id", columns="day_of_week", values="current_case")
 
-            table_df = pd.DataFrame({"วัน": DAY_LABELS, "เคสปัจจุบัน": cur_case})
+            rows = []
+            for did in demand_ids:
+                drow = d_idx.loc[did]
+                day_vals = [pivot_val(cur_pivot, did, d) for d in range(6)]
+                rows.append({
+                    "demand_id": did,
+                    "Origin": drow["origin_plant"],
+                    "Origin Name": plant_lookup.get(drow["origin_plant"], "—"),
+                    "Destination": drow["destination"],
+                    "Destination Name": plant_lookup.get(drow["destination"], "—"),
+                    "Product Code": drow["item_id"],
+                    "Description": item_lookup.get(drow["item_id"], "—"),
+                    **{mon_day_headers[i]: day_vals[i] for i in range(6)},
+                    "Total": sum(day_vals),
+                    "Required": int(drow["weekly_qty"]),
+                })
+            editor_df = pd.DataFrame(rows).set_index("demand_id")
+
+            st.caption("แก้ตัวเลขในตารางได้หลายรายการพร้อมกัน — แต่ละแถวต้อง Total ให้ตรงกับ Required ก่อนบันทึก")
             edited = st.data_editor(
-                table_df, hide_index=True, use_container_width=True,
-                disabled=["วัน"], key=f"editor_{sel_did}_{mon_week}",
+                editor_df,
+                hide_index=True,
+                use_container_width=True,
+                disabled=[
+                    "Origin", "Origin Name", "Destination", "Destination Name",
+                    "Product Code", "Description", "Total", "Required",
+                ],
+                key=f"adjust_editor_{mon_week}",
             )
 
-            diffs = [i for i in range(6) if int(edited.loc[i, "เคสปัจจุบัน"]) != cur_case[i]]
-            total_now = sum(cur_case)
-            total_master = sum(master_case)
-            st.caption(
-                f"รวมสัปดาห์นี้: {total_now:,} เคส "
-                + ("(ตรงกับ Master Plan)" if total_now == total_master else f"⚠️ ไม่ตรง Master Plan ({total_master:,} เคส)")
+            live_total = edited[mon_day_headers].sum(axis=1)
+            mismatch = edited.index[live_total != edited["Required"]]
+            if len(mismatch):
+                st.error(f"{len(mismatch)} รายการยอดรวมยังไม่ตรง Required — แก้ให้ครบก่อนบันทึก")
+
+            reason = st.text_input(
+                "เหตุผลที่แก้ไข (ใช้กับทุกรายการที่เปลี่ยนในการบันทึกครั้งนี้)", key=f"adjust_reason_{mon_week}"
             )
 
-            if len(diffs) == 1:
-                edit_day = diffs[0]
-                new_val = int(edited.loc[edit_day, "เคสปัจจุบัน"])
-                diff = new_val - cur_case[edit_day]
-                st.markdown(
-                    f"**แก้วัน{DAY_LABELS[edit_day]}: {cur_case[edit_day]:,} → {new_val:,} เคส "
-                    f"({'+' if diff>0 else ''}{diff:,})**"
-                )
-                other_days = [d for d in range(6) if d != edit_day]
-                comp_options = ["ไม่ต้อง (ยอดรวมจะเปลี่ยนจาก Demand)"] + [
-                    f"{DAY_LABELS[d]}: {cur_case[d]:,} → {cur_case[d]-diff:,} เคส" for d in other_days
-                ]
-                comp_choice = st.selectbox("หักชดเชยจากวัน (กันยอดรวมเพี้ยน)", comp_options)
-                reason = st.text_input("เหตุผลที่แก้ไข", key=f"reason_{sel_did}")
-
-                if st.button("Save data", type="primary"):
-                    if not reason:
-                        st.error("กรุณาระบุเหตุผล")
-                    else:
-                        it_cap = float(i_df[i_df["item_id"] == d_lookup.loc[sel_did, "item_id"]].iloc[0]["cap_per_truck"])
-                        plan_id = plan_row.loc[edit_day, "plan_id"]
-                        insert_revision(plan_id, edit_day, new_val, cases_to_trips(new_val, it_cap), reason)
-
-                        if comp_choice != comp_options[0]:
-                            comp_day = other_days[comp_options[1:].index(comp_choice)]
-                            comp_new = cur_case[comp_day] - diff
-                            if comp_new < 0:
-                                st.error(f"วัน{DAY_LABELS[comp_day]}จะติดลบ — เลือกวันอื่นหรือแก้จำนวนใหม่")
-                                st.stop()
-                            comp_plan_id = plan_row.loc[comp_day, "plan_id"]
-                            insert_revision(comp_plan_id, comp_day, comp_new, cases_to_trips(comp_new, it_cap), reason)
-
-                        clear_caches()
-                        st.success("บันทึกแล้ว")
-                        st.rerun()
-            elif len(diffs) > 1:
-                st.warning("แก้ทีละวันเท่านั้น — กด Save data ให้เรียบร้อยก่อนแก้วันถัดไป (รีเฟรชตารางถ้าค้าง)")
+            if st.button("Save Plan", type="primary"):
+                if len(mismatch):
+                    st.error("มีรายการยอดรวมไม่ตรง Required — แก้ก่อนบันทึก")
+                elif not reason:
+                    st.error("กรุณาระบุเหตุผล")
+                else:
+                    plan_idx = plan_df.set_index(["demand_id", "day_of_week"])
+                    changed = 0
+                    for did in edited.index:
+                        it_row = i_df[i_df["item_id"] == d_idx.loc[did, "item_id"]].iloc[0]
+                        cap = float(it_row["cap_per_truck"])
+                        for di, h in enumerate(mon_day_headers):
+                            new_val = int(edited.loc[did, h])
+                            before_val = int(editor_df.loc[did, h])
+                            if new_val == before_val:
+                                continue
+                            key = (did, di)
+                            if key not in plan_idx.index:
+                                continue
+                            plan_id = plan_idx.loc[key, "plan_id"]
+                            insert_revision(plan_id, di, new_val, cases_to_trips(new_val, cap), reason)
+                            changed += 1
+                    clear_caches()
+                    st.success(f"บันทึกแล้ว {changed} รายการที่เปลี่ยน")
+                    st.rerun()
 
 # ---------------------------------------------------------------
 # TAB 4: Transactions
@@ -562,23 +580,63 @@ with tab4:
         i_df = fetch_items()
         p_df = fetch_plants()
         demand_ids = d_df["demand_id"].tolist()
-        tx_df = fetch_transactions(demand_ids)
+        plan_df = fetch_master_plan_rows(demand_ids)
+        cur_df = fetch_current_plan_rows(demand_ids)
 
-        if tx_df.empty:
-            st.info("ยังไม่มีการปรับแผนในสัปดาห์นี้")
+        if plan_df.empty:
+            st.info("ยังไม่มี Master Plan ในสัปดาห์นี้")
         else:
             item_lookup = i_df.set_index("item_id")["description"].to_dict() if not i_df.empty else {}
             plant_lookup = p_df.set_index("plant_code")["plant_name"].to_dict() if not p_df.empty else {}
-            d_lookup = d_df.set_index("demand_id")
-            tx_df["demand_id"] = tx_df["master_plan"].apply(lambda x: x["demand_id"])
-            tx_df["สินค้า"] = tx_df["demand_id"].apply(
-                lambda did: (
-                    f"{item_lookup.get(d_lookup.loc[did, 'item_id'], did)} — "
-                    f"{plant_lookup.get(d_lookup.loc[did, 'origin_plant'], d_lookup.loc[did, 'origin_plant'])} → "
-                    f"{plant_lookup.get(d_lookup.loc[did, 'destination'], d_lookup.loc[did, 'destination'])}"
+            d_idx = d_df.set_index("demand_id")
+
+            tx_week_start = pd.to_datetime(d_df["week_start_date"].iloc[0]).date()
+            tx_day_headers = compute_day_headers(tx_week_start)
+
+            master_pivot = plan_df.pivot(index="demand_id", columns="day_of_week", values="planned_case")
+            cur_pivot = cur_df.pivot(index="demand_id", columns="day_of_week", values="current_case")
+
+            changed_rows = []
+            for did in demand_ids:
+                if did not in cur_pivot.index:
+                    continue
+                cur_vals = [pivot_val(cur_pivot, did, d) for d in range(6)]
+                master_vals = [pivot_val(master_pivot, did, d) for d in range(6)]
+                if cur_vals == master_vals:
+                    continue
+                drow = d_idx.loc[did]
+                row = {
+                    "Product Code": drow["item_id"],
+                    "Description": item_lookup.get(drow["item_id"], "—"),
+                    "Origin Name": plant_lookup.get(drow["origin_plant"], drow["origin_plant"]),
+                    "Destination Name": plant_lookup.get(drow["destination"], drow["destination"]),
+                }
+                for i, h in enumerate(tx_day_headers):
+                    row[h] = f"{master_vals[i]:,} → {cur_vals[i]:,}" if cur_vals[i] != master_vals[i] else f"{cur_vals[i]:,}"
+                row["Total"] = sum(cur_vals)
+                changed_rows.append(row)
+
+            st.markdown(f"**รายการที่เปลี่ยนจาก Master Plan ({len(changed_rows)} รายการ)**")
+            if not changed_rows:
+                st.info("ยังไม่มีรายการที่เปลี่ยนแปลงในสัปดาห์นี้")
+            else:
+                st.dataframe(pd.DataFrame(changed_rows), use_container_width=True, hide_index=True)
+
+            st.divider()
+            st.markdown("**ประวัติการแก้ไขทั้งหมด (log)**")
+            tx_df = fetch_transactions(demand_ids)
+            if tx_df.empty:
+                st.caption("ยังไม่มีประวัติการแก้ไข")
+            else:
+                tx_df["demand_id"] = tx_df["master_plan"].apply(lambda x: x["demand_id"])
+                tx_df["สินค้า"] = tx_df["demand_id"].apply(
+                    lambda did: (
+                        f"{item_lookup.get(d_idx.loc[did, 'item_id'], did)} — "
+                        f"{plant_lookup.get(d_idx.loc[did, 'origin_plant'], d_idx.loc[did, 'origin_plant'])} → "
+                        f"{plant_lookup.get(d_idx.loc[did, 'destination'], d_idx.loc[did, 'destination'])}"
+                    )
                 )
-            )
-            tx_df["วัน"] = tx_df["day_of_week"].apply(lambda d: DAY_LABELS[d])
-            show = tx_df[["สินค้า", "วัน", "revised_case", "revised_trip", "reason", "revised_at"]]
-            show = show.sort_values("revised_at", ascending=False)
-            st.dataframe(show, use_container_width=True, hide_index=True)
+                tx_df["วัน"] = tx_df["day_of_week"].apply(lambda d: tx_day_headers[d])
+                show = tx_df[["สินค้า", "วัน", "revised_case", "revised_trip", "reason", "revised_at"]]
+                show = show.sort_values("revised_at", ascending=False)
+                st.dataframe(show, use_container_width=True, hide_index=True)
