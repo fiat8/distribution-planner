@@ -510,7 +510,7 @@ with tab1:
             edited_demand = st.data_editor(
                 display_df,
                 hide_index=True,
-                use_container_width=True,
+                width="content",
                 disabled=[
                     "Origin", "Origin Name", "Destination", "Destination Name",
                     "Product Code", "Description", "Total",
@@ -637,7 +637,7 @@ with tab1:
             edited_preview = st.data_editor(
                 display_preview,
                 hide_index=True,
-                use_container_width=True,
+                width="content",
                 disabled=ID_COLS + ["Demand", "Total Case", "Balance +/-"],
                 column_config={
                     **id_col_config(),
@@ -758,7 +758,7 @@ with tab1:
         mp_df = pd.concat([pd.DataFrame(mp_rows), pd.DataFrame([mp_total_row])], ignore_index=True)
         st.dataframe(
             mp_df,
-            use_container_width=True,
+            width="content",
             hide_index=True,
             column_config={
                 **id_col_config(),
@@ -880,7 +880,7 @@ with tab2:
                 stock_view["Available Qty"] = stock_view["Available Qty"].map(fmt_comma)
                 st.dataframe(
                     stock_view,
-                    use_container_width=True,
+                    width="content",
                     hide_index=True,
                     column_config={
                         **id_col_config(),
@@ -974,7 +974,7 @@ with tab3:
                 edited = st.data_editor(
                     display_adjust,
                     hide_index=True,
-                    use_container_width=True,
+                    width="content",
                     disabled=[
                         "Origin", "Origin Name", "Destination", "Destination Name",
                         "Product Code", "Description", "Total", "Required",
@@ -1097,7 +1097,7 @@ with tab4:
             else:
                 st.dataframe(
                     pd.DataFrame(changed_rows),
-                    use_container_width=True,
+                    width="content",
                     hide_index=True,
                     column_config={
                         **id_col_config(),
@@ -1125,7 +1125,7 @@ with tab4:
                 show = show.sort_values("revised_at", ascending=False)
                 st.dataframe(
                     show,
-                    use_container_width=True,
+                    width="content",
                     hide_index=True,
                     column_config={
                         "สินค้า": st.column_config.Column("สินค้า", width="medium"),
