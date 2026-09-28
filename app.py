@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 from supabase import Client, create_client
 
-from engine import DAYS, allocate_cases, cases_to_trips
+from engine import DAYS, allocate_cases_ftl, cases_to_trips
 
 st.set_page_config(page_title="My Distributions' Plan", layout="wide")
 
@@ -53,6 +53,26 @@ def pivot_val(pivot_df: pd.DataFrame, idx, col) -> int:
         if pd.notna(v):
             return int(v)
     return 0
+
+
+def fmt_comma(v) -> str:
+    """แสดงตัวเลขแบบมี , คั่นหลักพัน ไม่มีทศนิยม (0 digit)"""
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError):
+        return str(v)
+    return f"{n:,}"
+
+
+def fmt_accounting(v) -> str:
+    """แสดงตัวเลขแบบ accounting: , คั่นหลักพัน ไม่มีทศนิยม ค่าติดลบใส่วงเล็บแทนเครื่องหมายลบ"""
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError):
+        return str(v)
+    if n < 0:
+        return f"({abs(n):,})"
+    return f"{n:,}"
 
 
 @st.cache_data(ttl=30)
@@ -303,6 +323,7 @@ with tab1:
         rows = []
         for _, row in demand_df.iterrows():
             ratio = list(row["day_ratio"]) if row["day_ratio"] else [20, 20, 20, 20, 20, 0]
+            day_vals = {day_headers[i]: int(ratio[i]) for i in range(6)}
             rows.append({
                 "demand_id": row["demand_id"],
                 "Origin": row["origin_plant"],
@@ -311,22 +332,42 @@ with tab1:
                 "Destination Name": plant_lookup.get(row["destination"], "—"),
                 "Product Code": row["item_id"],
                 "Description": item_lookup.get(row["item_id"], "—"),
-                **{day_headers[i]: int(ratio[i]) for i in range(6)},
+                **day_vals,
+                "Total": sum(day_vals.values()),
             })
-        editor_df = pd.DataFrame(rows).set_index("demand_id")
+        base_editor_df = pd.DataFrame(rows).set_index("demand_id")
+
+        # เก็บค่าที่แก้ไว้ใน session_state เอง เพื่อให้คอลัมน์ Total คำนวณใหม่ทุกครั้งตามค่าที่แก้ล่าสุด
+        # (อัปเดตทันทีที่ออกจากช่องที่แก้ไข — Streamlit รันสคริปต์ใหม่ทุกครั้งที่แก้ตาราง)
+        demand_state_key = f"demand_editor_data_{week_id}"
+        if demand_state_key not in st.session_state or list(
+            st.session_state[demand_state_key].index
+        ) != list(base_editor_df.index):
+            st.session_state[demand_state_key] = base_editor_df
+
+        display_df = st.session_state[demand_state_key].copy()
+        display_df["Total"] = display_df[day_headers].sum(axis=1)
 
         edited_demand = st.data_editor(
-            editor_df,
+            display_df,
             hide_index=True,
             use_container_width=True,
-            disabled=["Origin", "Origin Name", "Destination", "Destination Name", "Product Code", "Description"],
+            disabled=[
+                "Origin", "Origin Name", "Destination", "Destination Name",
+                "Product Code", "Description", "Total",
+            ],
             column_config={
-                h: st.column_config.NumberColumn(h, min_value=0, max_value=100) for h in day_headers
+                **{h: st.column_config.NumberColumn(h, min_value=0, max_value=100) for h in day_headers},
+                "Total": st.column_config.NumberColumn(
+                    "Total", format="%d", help="ผลรวม % ของแถวนี้ ต้องเท่ากับ 100 ก่อนกด Proceed"
+                ),
             },
             key=f"demand_editor_{week_id}",
         )
+        edited_demand["Total"] = edited_demand[day_headers].sum(axis=1)
+        st.session_state[demand_state_key] = edited_demand
 
-        totals = edited_demand[day_headers].sum(axis=1)
+        totals = edited_demand["Total"]
         bad_rows = totals[totals != 100]
         if len(bad_rows):
             st.error(f"มี {len(bad_rows)} รายการสัดส่วนรวมไม่ครบ 100% — แก้ก่อนกด Proceed")
@@ -335,7 +376,8 @@ with tab1:
             if len(bad_rows):
                 st.error("มีรายการสัดส่วนรวมไม่ครบ 100% — แก้ก่อนคำนวณ")
             else:
-                skipped, created = 0, 0
+                preview_rows = []
+                skipped = 0
                 for did in edited_demand.index:
                     ratio = [int(edited_demand.loc[did, h]) for h in day_headers]
                     update_demand_ratio(did, ratio)
@@ -344,12 +386,97 @@ with tab1:
                         continue
                     row = demand_df[demand_df["demand_id"] == did].iloc[0]
                     it = items_df[items_df["item_id"] == row["item_id"]].iloc[0]
-                    alloc = allocate_cases(float(row["weekly_qty"]), [p / 100 for p in ratio])
-                    trip = [cases_to_trips(c, float(it["cap_per_truck"])) for c in alloc]
-                    insert_master_plan(did, alloc, trip)
-                    created += 1
+                    alloc, _balance = allocate_cases_ftl(
+                        float(row["weekly_qty"]), ratio, float(it["cap_per_truck"])
+                    )
+                    preview_rows.append({
+                        "demand_id": did,
+                        "Origin": row["origin_plant"],
+                        "Origin Name": plant_lookup.get(row["origin_plant"], "—"),
+                        "Destination": row["destination"],
+                        "Destination Name": plant_lookup.get(row["destination"], "—"),
+                        "Product Code": row["item_id"],
+                        "Description": item_lookup.get(row["item_id"], "—"),
+                        **{day_headers[i]: alloc[i] for i in range(6)},
+                        "Requirement Demand": float(row["weekly_qty"]),
+                    })
                 clear_caches()
-                st.success(f"คำนวณเสร็จ: สร้างใหม่ {created} รายการ, ข้าม {skipped} รายการ (มี Master Plan อยู่แล้ว)")
+                if preview_rows:
+                    st.session_state[f"alloc_preview_{week_id}"] = pd.DataFrame(preview_rows).set_index(
+                        "demand_id"
+                    )
+                    st.success(
+                        f"คำนวณ Master Plan Allocation แบบ Full Truck Load แล้ว {len(preview_rows)} รายการ "
+                        f"(ข้าม {skipped} รายการที่มี Master Plan อยู่แล้ว) — ปรับ Balance ให้ลงตัวแล้วกด "
+                        "Save to Master Plan ด้านล่าง"
+                    )
+                else:
+                    st.info(f"ทุกรายการมี Master Plan อยู่แล้ว (ข้าม {skipped} รายการ) — ไม่มีรายการใหม่ให้คำนวณ")
+                st.rerun()
+
+    # -----------------------------------------------------------
+    # Master Plan Allocation — preview แบบ Full Truck Load ที่ยังไม่บันทึก รอ user ปรับ Balance
+    # -----------------------------------------------------------
+    preview_key = f"alloc_preview_{week_id}"
+    if preview_key in st.session_state and not st.session_state[preview_key].empty:
+        st.divider()
+        st.subheader("Master Plan Allocation")
+        st.caption(
+            "คำนวณแบบ Full Truck Load (จัดเฉพาะเต็มคัน ไม่ปัดเศษ) โดยให้ Priority วันแรกๆ ก่อน — "
+            "ส่วนที่เกินหรือขาด (Balance) ให้ปรับตัวเลขในช่องวันของแต่ละแถวเองจนลงตัว (Balance = 0) "
+            "แล้วจึงกด Save to Master Plan"
+        )
+
+        preview_base = st.session_state[preview_key]
+        total_case_num = preview_base[day_headers].sum(axis=1)
+        balance_num = total_case_num - preview_base["Requirement Demand"]
+
+        display_preview = preview_base.copy()
+        display_preview["Requirement Demand"] = preview_base["Requirement Demand"].apply(fmt_accounting)
+        display_preview["Total Case"] = total_case_num.apply(fmt_accounting)
+        display_preview["Balance +/-"] = balance_num.apply(fmt_accounting)
+
+        edited_preview = st.data_editor(
+            display_preview,
+            hide_index=True,
+            use_container_width=True,
+            disabled=[
+                "Origin", "Origin Name", "Destination", "Destination Name",
+                "Product Code", "Description", "Requirement Demand", "Total Case", "Balance +/-",
+            ],
+            column_config={h: st.column_config.NumberColumn(h, format="%,d") for h in day_headers},
+            key=f"alloc_editor_{week_id}",
+        )
+
+        # เก็บค่าตัวเลขวัน (จ-ส) ที่แก้ไขกลับเข้า session_state — คอลัมน์อื่นคงจาก preview_base เดิม (ไม่ถูก stringify)
+        new_state = preview_base.copy()
+        for h in day_headers:
+            new_state[h] = edited_preview[h]
+        st.session_state[preview_key] = new_state
+
+        live_total = edited_preview[day_headers].sum(axis=1)
+        live_balance = live_total - preview_base["Requirement Demand"]
+        not_balanced = edited_preview.index[live_balance != 0]
+        if len(not_balanced):
+            st.error(
+                f"{len(not_balanced)} รายการยอด Balance ยังไม่ลงตัว (ต้องเป็น 0) — "
+                "แก้ตัวเลขในช่องวันให้ครบก่อนบันทึก"
+            )
+
+        if st.button("Save to Master Plan", type="primary"):
+            if len(not_balanced):
+                st.error("มีรายการ Balance ยังไม่ลงตัว — แก้ก่อนบันทึก")
+            else:
+                for did in edited_preview.index:
+                    row = demand_df[demand_df["demand_id"] == did].iloc[0]
+                    it = items_df[items_df["item_id"] == row["item_id"]].iloc[0]
+                    cap = float(it["cap_per_truck"])
+                    alloc = [float(edited_preview.loc[did, h]) for h in day_headers]
+                    trip = [cases_to_trips(c, cap) for c in alloc]
+                    insert_master_plan(did, alloc, trip)
+                del st.session_state[preview_key]
+                clear_caches()
+                st.success(f"บันทึก Master Plan แล้ว {len(edited_preview)} รายการ")
                 st.rerun()
 
     demand_ids = demand_df["demand_id"].tolist() if not demand_df.empty else []
@@ -358,16 +485,24 @@ with tab1:
         st.divider()
         st.subheader("Master Plan")
         d_idx = demand_df.set_index("demand_id")
-        pivot = plan_df.pivot(index="demand_id", columns="day_of_week", values="planned_case")
-        pivot.columns = [day_headers[c] for c in pivot.columns]
-        pivot["รวม"] = pivot.sum(axis=1)
-        pivot.index = [
-            f"{item_lookup.get(d_idx.loc[i, 'item_id'], i)} · "
-            f"{plant_lookup.get(d_idx.loc[i, 'origin_plant'], d_idx.loc[i, 'origin_plant'])} → "
-            f"{plant_lookup.get(d_idx.loc[i, 'destination'], d_idx.loc[i, 'destination'])}"
-            for i in pivot.index
-        ]
-        st.dataframe(pivot, use_container_width=True)
+        mp_pivot = plan_df.pivot(index="demand_id", columns="day_of_week", values="planned_case")
+
+        mp_rows = []
+        for did in mp_pivot.index:
+            drow = d_idx.loc[did]
+            day_vals = [pivot_val(mp_pivot, did, d) for d in range(6)]
+            mp_rows.append({
+                "Origin": drow["origin_plant"],
+                "Origin Name": plant_lookup.get(drow["origin_plant"], "—"),
+                "Destination": drow["destination"],
+                "Destination Name": plant_lookup.get(drow["destination"], "—"),
+                "Product Code": drow["item_id"],
+                "Description": item_lookup.get(drow["item_id"], "—"),
+                **{day_headers[i]: fmt_comma(day_vals[i]) for i in range(6)},
+                "Total": fmt_comma(sum(day_vals)),
+            })
+        mp_df = pd.DataFrame(mp_rows)
+        st.dataframe(mp_df, use_container_width=True, hide_index=True)
 
         export_rows = []
         for _, r in plan_df.iterrows():
@@ -401,9 +536,9 @@ with tab1:
             reset_all()
             clear_caches()
             for k in list(st.session_state.keys()):
-                if k.startswith(("demand_editor_", "editor_", "reason_", "ratio_")) or k in (
-                    "dash_week", "mon_week", "tx_week",
-                ):
+                if k.startswith(
+                    ("demand_editor_", "alloc_preview_", "alloc_editor_", "editor_", "reason_", "ratio_")
+                ) or k in ("dash_week", "mon_week", "tx_week"):
                     del st.session_state[k]
             st.success("ลบข้อมูลทั้งหมดแล้ว")
             st.rerun()
