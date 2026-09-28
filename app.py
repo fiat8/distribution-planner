@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 
 import pandas as pd
 import streamlit as st
@@ -75,16 +76,61 @@ def fmt_accounting(v) -> str:
     return f"{n:,}"
 
 
+def norm_code(v) -> str:
+    """
+    ทำให้รหัส (Product Code / Plant Code) เป็น string รูปแบบเดียวกันเสมอ ป้องกัน bug จับคู่ไม่เจอ
+    เช่น Excel อ่านคอลัมน์รหัสเป็นตัวเลข (Number) ในชีทหนึ่ง แต่อีกชีทเก็บเป็นข้อความ (Text) —
+    pandas จะได้ "4009215.0" ในชีทที่เป็นตัวเลข ต่างจาก "4009215" ในชีทที่เป็นข้อความ ทำให้ lookup ไม่เจอ
+    แล้วรายการนั้นเลยไม่ถูกคำนวณ/allocate เลย (ค่าจะเป็น 0 ทุกวันหน้าเว็บ)
+    ฟังก์ชันนี้ตัดช่องว่างหัวท้าย และตัด ".0" ที่มาจาก Excel เก็บเป็นตัวเลขออก ให้เทียบกันตรงกันเสมอ
+    """
+    s = str(v).strip()
+    if s.endswith(".0"):
+        head = s[:-2]
+        if head.lstrip("-").isdigit():
+            s = head
+    return s
+
+
+def id_col_config() -> dict:
+    """
+    ตั้งความกว้างคอลัมน์ข้อมูลอ้างอิง (Origin/Destination/Product/Description) ให้กระชับแบบ fixed width
+    เพื่อให้ผลรวมความกว้างทุกคอลัมน์พอดีจอ ไม่ต้องเลื่อน scroll แนวนอน
+    """
+    return {
+        "Origin": st.column_config.Column("Origin", width="small"),
+        "Origin Name": st.column_config.Column("Origin Name", width="small"),
+        "Destination": st.column_config.Column("Destination", width="small"),
+        "Destination Name": st.column_config.Column("Destination Name", width="small"),
+        "Product Code": st.column_config.Column("Product Code", width="small"),
+        "Description": st.column_config.Column("Description", width="medium"),
+    }
+
+
+def find_item_row(items_df: pd.DataFrame, item_id: str):
+    """หา row ของ item_master ตาม item_id (normalize รูปแบบรหัสก่อนเทียบ) คืน None ถ้าไม่เจอ แทนที่จะพัง"""
+    if items_df.empty:
+        return None
+    match = items_df[items_df["item_id"] == norm_code(item_id)]
+    return match.iloc[0] if not match.empty else None
+
+
 @st.cache_data(ttl=30)
 def fetch_items() -> pd.DataFrame:
     res = get_client().table("item_master").select("*").order("item_id").execute()
-    return pd.DataFrame(res.data)
+    df = pd.DataFrame(res.data)
+    if not df.empty:
+        df["item_id"] = df["item_id"].map(norm_code)
+    return df
 
 
 @st.cache_data(ttl=30)
 def fetch_plants() -> pd.DataFrame:
     res = get_client().table("plant_master").select("*").order("plant_code").execute()
-    return pd.DataFrame(res.data)
+    df = pd.DataFrame(res.data)
+    if not df.empty:
+        df["plant_code"] = df["plant_code"].map(norm_code)
+    return df
 
 
 @st.cache_data(ttl=30)
@@ -93,7 +139,12 @@ def fetch_demand(week_id: str | None = None) -> pd.DataFrame:
     if week_id:
         q = q.eq("week_id", week_id)
     res = q.order("item_id").execute()
-    return pd.DataFrame(res.data)
+    df = pd.DataFrame(res.data)
+    if not df.empty:
+        df["item_id"] = df["item_id"].map(norm_code)
+        df["origin_plant"] = df["origin_plant"].map(norm_code)
+        df["destination"] = df["destination"].map(norm_code)
+    return df
 
 
 @st.cache_data(ttl=30)
@@ -161,17 +212,24 @@ def clear_caches():
 
 
 def upsert_items(df: pd.DataFrame):
+    df = df.copy()
+    df["item_id"] = df["item_id"].map(norm_code)  # กัน Excel อ่านรหัสเป็นตัวเลขแล้วได้ "xxxx.0"
     records = df[["item_id", "description", "cap_per_truck"]].to_dict("records")
     get_client().table("item_master").upsert(records, on_conflict="item_id").execute()
 
 
 def upsert_plants(df: pd.DataFrame):
+    df = df.copy()
+    df["plant_code"] = df["plant_code"].map(norm_code)
     records = df[["plant_code", "plant_name"]].to_dict("records")
     get_client().table("plant_master").upsert(records, on_conflict="plant_code").execute()
 
 
 def upsert_demand(df: pd.DataFrame, week_id: str, week_start: dt.date):
     df = df.copy()
+    df["item_id"] = df["item_id"].map(norm_code)
+    df["origin_plant"] = df["origin_plant"].map(norm_code)
+    df["destination"] = df["destination"].map(norm_code)
     df["week_id"] = week_id
     df["week_start_date"] = week_start.isoformat()
     df["day_ratio"] = [[20, 20, 20, 20, 20, 0]] * len(df)  # default เท่ากันทุกวัน active — ปรับได้ในแอพ
@@ -345,27 +403,40 @@ with tab1:
         ) != list(base_editor_df.index):
             st.session_state[demand_state_key] = base_editor_df
 
-        display_df = st.session_state[demand_state_key].copy()
-        display_df["Total"] = display_df[day_headers].sum(axis=1)
+        st.caption("✏️ = ช่องที่แก้ไขได้ (จ-ส) — คอลัมน์อื่นคำนวณ/ดึงมาให้อัตโนมัติ")
 
-        edited_demand = st.data_editor(
-            display_df,
-            hide_index=True,
-            use_container_width=True,
-            disabled=[
-                "Origin", "Origin Name", "Destination", "Destination Name",
-                "Product Code", "Description", "Total",
-            ],
-            column_config={
-                **{h: st.column_config.NumberColumn(h, min_value=0, max_value=100) for h in day_headers},
-                "Total": st.column_config.NumberColumn(
-                    "Total", format="%d", help="ผลรวม % ของแถวนี้ ต้องเท่ากับ 100 ก่อนกด Proceed"
-                ),
-            },
-            key=f"demand_editor_{week_id}",
-        )
-        edited_demand["Total"] = edited_demand[day_headers].sum(axis=1)
-        st.session_state[demand_state_key] = edited_demand
+        with st.spinner("กำลังคำนวณ Total..."):
+            display_df = st.session_state[demand_state_key].copy()
+            display_df["Total"] = display_df[day_headers].sum(axis=1)
+            time.sleep(0.2)  # หน่วงเล็กน้อยให้เห็นสถานะกำลังคำนวณหลังแก้ตัวเลข
+
+            edited_demand = st.data_editor(
+                display_df,
+                hide_index=True,
+                use_container_width=True,
+                disabled=[
+                    "Origin", "Origin Name", "Destination", "Destination Name",
+                    "Product Code", "Description", "Total",
+                ],
+                column_config={
+                    **id_col_config(),
+                    **{
+                        h: st.column_config.NumberColumn(
+                            f"✏️ {h}", min_value=0, max_value=100, width="small"
+                        )
+                        for h in day_headers
+                    },
+                    "Total": st.column_config.NumberColumn(
+                        "Total",
+                        format="%d",
+                        width="small",
+                        help="ผลรวม % ของแถวนี้ ต้องเท่ากับ 100 ก่อนกด Proceed",
+                    ),
+                },
+                key=f"demand_editor_{week_id}",
+            )
+            edited_demand["Total"] = edited_demand[day_headers].sum(axis=1)
+            st.session_state[demand_state_key] = edited_demand
 
         totals = edited_demand["Total"]
         bad_rows = totals[totals != 100]
@@ -378,6 +449,8 @@ with tab1:
             else:
                 preview_rows = []
                 skipped = 0
+                missing_item = []
+                zero_alloc = []
                 for did in edited_demand.index:
                     ratio = [int(edited_demand.loc[did, h]) for h in day_headers]
                     update_demand_ratio(did, ratio)
@@ -385,10 +458,14 @@ with tab1:
                         skipped += 1
                         continue
                     row = demand_df[demand_df["demand_id"] == did].iloc[0]
-                    it = items_df[items_df["item_id"] == row["item_id"]].iloc[0]
-                    alloc, _balance = allocate_cases_ftl(
-                        float(row["weekly_qty"]), ratio, float(it["cap_per_truck"])
-                    )
+                    it = find_item_row(items_df, row["item_id"])
+                    if it is None:
+                        missing_item.append(str(row["item_id"]))
+                        continue
+                    cap = float(it["cap_per_truck"])
+                    alloc, _balance = allocate_cases_ftl(float(row["weekly_qty"]), ratio, cap)
+                    if sum(alloc) == 0 and float(row["weekly_qty"]) > 0:
+                        zero_alloc.append(f"{row['item_id']} (Demand {int(row['weekly_qty']):,} / Unit per truck {cap:,.0f})")
                     preview_rows.append({
                         "demand_id": did,
                         "Origin": row["origin_plant"],
@@ -398,9 +475,24 @@ with tab1:
                         "Product Code": row["item_id"],
                         "Description": item_lookup.get(row["item_id"], "—"),
                         **{day_headers[i]: alloc[i] for i in range(6)},
-                        "Requirement Demand": float(row["weekly_qty"]),
+                        "Demand": float(row["weekly_qty"]),
                     })
                 clear_caches()
+                if missing_item:
+                    st.warning(
+                        f"ข้าม {len(missing_item)} รายการ เพราะหา Product Code ใน Item Master ไม่เจอ: "
+                        + ", ".join(sorted(set(missing_item)))
+                        + " — ตรวจว่ารหัสสินค้านี้มีอยู่ใน Item Master ของไฟล์ที่ import "
+                        "และสะกด/รูปแบบตรงกับที่กรอกในชีท Demand หรือไม่"
+                    )
+                if zero_alloc:
+                    st.info(
+                        "ℹ️ " + str(len(zero_alloc)) + " รายการต่อไปนี้ยังไม่ถึง 1 เต็มคันรถในวันใดเลย "
+                        "(Demand ต่อวันจากสัดส่วน % ที่ตั้งไว้ ยังน้อยกว่า Unit per truck) จึงต้องกรอกตัวเลขในช่องวัน "
+                        "จ-ส เองทั้งหมดในตาราง Master Plan Allocation ด้านล่าง — ถ้าไม่ควรเป็นแบบนี้ ลองตรวจ "
+                        "Unit per truck ของสินค้านั้นใน Item Master ว่าใส่หน่วย/ตัวเลขถูกต้องหรือไม่: "
+                        + "; ".join(zero_alloc)
+                    )
                 if preview_rows:
                     st.session_state[f"alloc_preview_{week_id}"] = pd.DataFrame(preview_rows).set_index(
                         "demand_id"
@@ -410,7 +502,7 @@ with tab1:
                         f"(ข้าม {skipped} รายการที่มี Master Plan อยู่แล้ว) — ปรับ Balance ให้ลงตัวแล้วกด "
                         "Save to Master Plan ด้านล่าง"
                     )
-                else:
+                elif not missing_item:
                     st.info(f"ทุกรายการมี Master Plan อยู่แล้ว (ข้าม {skipped} รายการ) — ไม่มีรายการใหม่ให้คำนวณ")
                 st.rerun()
 
@@ -427,26 +519,40 @@ with tab1:
             "แล้วจึงกด Save to Master Plan"
         )
 
+        st.caption("✏️ = ช่องที่แก้ไขได้ (จ-ส) — คอลัมน์อื่นคำนวณ/ดึงมาให้อัตโนมัติ")
+
         preview_base = st.session_state[preview_key]
-        total_case_num = preview_base[day_headers].sum(axis=1)
-        balance_num = total_case_num - preview_base["Requirement Demand"]
 
-        display_preview = preview_base.copy()
-        display_preview["Requirement Demand"] = preview_base["Requirement Demand"].apply(fmt_accounting)
-        display_preview["Total Case"] = total_case_num.apply(fmt_accounting)
-        display_preview["Balance +/-"] = balance_num.apply(fmt_accounting)
+        with st.spinner("กำลังคำนวณ Total Case / Balance..."):
+            total_case_num = preview_base[day_headers].sum(axis=1)
+            balance_num = total_case_num - preview_base["Demand"]
 
-        edited_preview = st.data_editor(
-            display_preview,
-            hide_index=True,
-            use_container_width=True,
-            disabled=[
-                "Origin", "Origin Name", "Destination", "Destination Name",
-                "Product Code", "Description", "Requirement Demand", "Total Case", "Balance +/-",
-            ],
-            column_config={h: st.column_config.NumberColumn(h, format="%,d") for h in day_headers},
-            key=f"alloc_editor_{week_id}",
-        )
+            display_preview = preview_base.copy()
+            display_preview["Demand"] = preview_base["Demand"].apply(fmt_accounting)
+            display_preview["Total Case"] = total_case_num.apply(fmt_accounting)
+            display_preview["Balance +/-"] = balance_num.apply(fmt_accounting)
+            time.sleep(0.2)  # หน่วงเล็กน้อยให้เห็นสถานะกำลังคำนวณหลังแก้ตัวเลข
+
+            edited_preview = st.data_editor(
+                display_preview,
+                hide_index=True,
+                use_container_width=True,
+                disabled=[
+                    "Origin", "Origin Name", "Destination", "Destination Name",
+                    "Product Code", "Description", "Demand", "Total Case", "Balance +/-",
+                ],
+                column_config={
+                    **id_col_config(),
+                    **{
+                        h: st.column_config.NumberColumn(f"✏️ {h}", format="%,d", width="small")
+                        for h in day_headers
+                    },
+                    "Demand": st.column_config.Column("Demand", width="small"),
+                    "Total Case": st.column_config.Column("Total Case", width="small"),
+                    "Balance +/-": st.column_config.Column("Balance +/-", width="small"),
+                },
+                key=f"alloc_editor_{week_id}",
+            )
 
         # เก็บค่าตัวเลขวัน (จ-ส) ที่แก้ไขกลับเข้า session_state — คอลัมน์อื่นคงจาก preview_base เดิม (ไม่ถูก stringify)
         new_state = preview_base.copy()
@@ -455,7 +561,7 @@ with tab1:
         st.session_state[preview_key] = new_state
 
         live_total = edited_preview[day_headers].sum(axis=1)
-        live_balance = live_total - preview_base["Requirement Demand"]
+        live_balance = live_total - preview_base["Demand"]
         not_balanced = edited_preview.index[live_balance != 0]
         if len(not_balanced):
             st.error(
@@ -467,17 +573,36 @@ with tab1:
             if len(not_balanced):
                 st.error("มีรายการ Balance ยังไม่ลงตัว — แก้ก่อนบันทึก")
             else:
+                missing_codes = []
+                remaining_ids = []
+                saved = 0
                 for did in edited_preview.index:
                     row = demand_df[demand_df["demand_id"] == did].iloc[0]
-                    it = items_df[items_df["item_id"] == row["item_id"]].iloc[0]
+                    it = find_item_row(items_df, row["item_id"])
+                    if it is None:
+                        missing_codes.append(str(row["item_id"]))
+                        remaining_ids.append(did)
+                        continue
                     cap = float(it["cap_per_truck"])
                     alloc = [float(edited_preview.loc[did, h]) for h in day_headers]
                     trip = [cases_to_trips(c, cap) for c in alloc]
                     insert_master_plan(did, alloc, trip)
-                del st.session_state[preview_key]
-                clear_caches()
-                st.success(f"บันทึก Master Plan แล้ว {len(edited_preview)} รายการ")
-                st.rerun()
+                    saved += 1
+                if missing_codes:
+                    st.warning(
+                        f"ข้าม {len(missing_codes)} รายการ เพราะหา Product Code ใน Item Master ไม่เจอ: "
+                        + ", ".join(sorted(set(missing_codes)))
+                        + " — ไม่ถูกบันทึก ยังค้างอยู่ในตารางด้านบนให้แก้ไข"
+                    )
+                if saved:
+                    # เก็บเฉพาะแถวที่ยังบันทึกไม่สำเร็จไว้ใน preview ต่อ ส่วนที่บันทึกแล้วเอาออก
+                    if remaining_ids:
+                        st.session_state[preview_key] = preview_base.loc[remaining_ids]
+                    else:
+                        del st.session_state[preview_key]
+                    clear_caches()
+                    st.success(f"บันทึก Master Plan แล้ว {saved} รายการ")
+                    st.rerun()
 
     demand_ids = demand_df["demand_id"].tolist() if not demand_df.empty else []
     plan_df = fetch_master_plan_rows(demand_ids)
@@ -502,7 +627,16 @@ with tab1:
                 "Total": fmt_comma(sum(day_vals)),
             })
         mp_df = pd.DataFrame(mp_rows)
-        st.dataframe(mp_df, use_container_width=True, hide_index=True)
+        st.dataframe(
+            mp_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                **id_col_config(),
+                **{h: st.column_config.Column(h, width="small") for h in day_headers},
+                "Total": st.column_config.Column("Total", width="small"),
+            },
+        )
 
         export_rows = []
         for _, r in plan_df.iterrows():
@@ -655,6 +789,7 @@ with tab3:
             editor_df = pd.DataFrame(rows).set_index("demand_id")
 
             st.caption("แก้ตัวเลขในตารางได้หลายรายการพร้อมกัน — แต่ละแถวต้อง Total ให้ตรงกับ Required ก่อนบันทึก")
+            st.caption("✏️ = ช่องที่แก้ไขได้ (จ-ส)")
             edited = st.data_editor(
                 editor_df,
                 hide_index=True,
@@ -663,6 +798,15 @@ with tab3:
                     "Origin", "Origin Name", "Destination", "Destination Name",
                     "Product Code", "Description", "Total", "Required",
                 ],
+                column_config={
+                    **id_col_config(),
+                    **{
+                        h: st.column_config.NumberColumn(f"✏️ {h}", width="small")
+                        for h in mon_day_headers
+                    },
+                    "Total": st.column_config.Column("Total", width="small"),
+                    "Required": st.column_config.Column("Required", width="small"),
+                },
                 key=f"adjust_editor_{mon_week}",
             )
 
@@ -755,7 +899,16 @@ with tab4:
             if not changed_rows:
                 st.info("ยังไม่มีรายการที่เปลี่ยนแปลงในสัปดาห์นี้")
             else:
-                st.dataframe(pd.DataFrame(changed_rows), use_container_width=True, hide_index=True)
+                st.dataframe(
+                    pd.DataFrame(changed_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        **id_col_config(),
+                        **{h: st.column_config.Column(h, width="medium") for h in tx_day_headers},
+                        "Total": st.column_config.Column("Total", width="small"),
+                    },
+                )
 
             st.divider()
             st.markdown("**ประวัติการแก้ไขทั้งหมด (log)**")
@@ -774,4 +927,16 @@ with tab4:
                 tx_df["วัน"] = tx_df["day_of_week"].apply(lambda d: tx_day_headers[d])
                 show = tx_df[["สินค้า", "วัน", "revised_case", "revised_trip", "reason", "revised_at"]]
                 show = show.sort_values("revised_at", ascending=False)
-                st.dataframe(show, use_container_width=True, hide_index=True)
+                st.dataframe(
+                    show,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "สินค้า": st.column_config.Column("สินค้า", width="medium"),
+                        "วัน": st.column_config.Column("วัน", width="small"),
+                        "revised_case": st.column_config.Column("revised_case", width="small"),
+                        "revised_trip": st.column_config.Column("revised_trip", width="small"),
+                        "reason": st.column_config.Column("reason", width="medium"),
+                        "revised_at": st.column_config.Column("revised_at", width="small"),
+                    },
+                )
