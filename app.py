@@ -163,7 +163,10 @@ def fetch_demand(week_id: str | None = None) -> pd.DataFrame:
 @st.cache_data(ttl=30)
 def fetch_stock() -> pd.DataFrame:
     res = get_client().table("stock_snapshot").select("*").order("snapshot_date", desc=True).execute()
-    return pd.DataFrame(res.data)
+    df = pd.DataFrame(res.data)
+    if not df.empty:
+        df["item_id"] = df["item_id"].map(norm_code)
+    return df
 
 
 @st.cache_data(ttl=15)
@@ -252,9 +255,21 @@ def upsert_demand(df: pd.DataFrame, week_id: str, week_start: dt.date):
     get_client().table("demand").upsert(records, on_conflict="item_id,destination,week_id").execute()
 
 
-def upsert_stock(df: pd.DataFrame):
-    records = df[["item_id", "snapshot_date", "available_qty"]].to_dict("records")
-    get_client().table("stock_snapshot").upsert(records, on_conflict="item_id,snapshot_date").execute()
+def upsert_stock(df: pd.DataFrame, valid_item_ids: "set[str]") -> "tuple[int, int]":
+    """
+    บันทึก Stock snapshot — item_id เป็น FK ไป item_master ดังนั้นถ้ามีรหัสใน Stock
+    ที่ไม่มีอยู่จริงใน Item Master (ของไฟล์เดียวกัน) ให้ข้ามแถวนั้นแทนที่จะทำให้ทั้ง Import ล้มเหลว
+    คืนค่า (จำนวนแถวที่ข้าม, จำนวนแถวที่บันทึกสำเร็จ)
+    """
+    df = df.copy()
+    df["item_id"] = df["item_id"].map(norm_code)  # กัน Excel อ่านรหัสเป็นตัวเลขแล้วได้ "xxxx.0"
+    valid_mask = df["item_id"].isin(valid_item_ids)
+    skipped = int((~valid_mask).sum())
+    df_valid = df[valid_mask]
+    records = df_valid[["item_id", "snapshot_date", "available_qty"]].to_dict("records")
+    if records:
+        get_client().table("stock_snapshot").upsert(records, on_conflict="item_id,snapshot_date").execute()
+    return skipped, len(records)
 
 
 def update_demand_ratio(demand_id: str, ratio_pct: list[int]):
@@ -365,20 +380,33 @@ with tab1:
 
             stock_df = pd.read_excel(uploaded, sheet_name="Stock", header=2, dtype={"item_id": str})
             stock_df["snapshot_date"] = pd.to_datetime(stock_df["snapshot_date"]).dt.date.astype(str)
+        except Exception as e:  # noqa: BLE001
+            st.error(f"อ่านไฟล์ไม่สำเร็จ ตรวจชื่อชีทและคอลัมน์ให้ตรง template — {e}")
+            items_df_new = plants_df_new = demand_df_new = stock_df = None
 
-            if st.button("Import", type="primary"):
+        if items_df_new is not None and st.button("Import", type="primary"):
+            try:
                 upsert_plants(plants_df_new)
                 upsert_items(items_df_new)
                 upsert_demand(demand_df_new, week_id, week_start)
-                upsert_stock(stock_df)
+                # Stock อ้างอิง item_id เป็น FK ไป item_master — ถ้าไฟล์นี้มีรหัสใน Stock ที่ไม่มีอยู่จริง
+                # ใน Item Master (ของไฟล์เดียวกัน) ให้ข้ามแถวนั้นแทนที่จะทำให้ทั้ง Import ล้มเหลว
+                valid_item_ids = set(items_df_new["item_id"].map(norm_code))
+                stock_skipped, stock_saved = upsert_stock(stock_df, valid_item_ids)
                 clear_caches()
-                st.success(
+                msg = (
                     f"นำเข้าเรียบร้อย: {len(plants_df_new)} plants, {len(items_df_new)} items, "
-                    f"{len(demand_df_new)} demand, {len(stock_df)} stock"
+                    f"{len(demand_df_new)} demand, {stock_saved} stock"
                 )
+                if stock_skipped:
+                    st.warning(
+                        f"ข้าม {stock_skipped} แถวในชีท Stock เพราะ Product Code ไม่มีอยู่ใน Item Master "
+                        "ของไฟล์เดียวกันนี้ — ตรวจว่าใส่รหัสสินค้าใน Item Master ครบหรือสะกดตรงกับ Stock หรือไม่"
+                    )
+                st.success(msg)
                 st.rerun()
-        except Exception as e:  # noqa: BLE001
-            st.error(f"อ่านไฟล์ไม่สำเร็จ ตรวจชื่อชีทและคอลัมน์ให้ตรง template — {e}")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"บันทึกข้อมูลไม่สำเร็จ (Database error) — {e}")
 
     items_df = fetch_items()
     plants_df = fetch_plants()
@@ -744,6 +772,43 @@ with tab2:
             by_day = merged.groupby("day_of_week")["current_case"].sum().reindex(range(6), fill_value=0)
             by_day.index = DAY_LABELS
             st.bar_chart(by_day)
+
+        st.divider()
+        st.subheader("Stock Overview")
+        st.caption(
+            "แสดงยอดคงเหลือล่าสุดต่อ SKU เฉพาะรายการที่มีอยู่ใน Item Master — "
+            "ใช้ดูเป็นข้อมูลอ้างอิงเท่านั้น ไม่ใช้ตัดสิน/บล็อกการนำเข้าหรือการคำนวณ Master Plan"
+        )
+        stock_df = fetch_stock()
+        if stock_df.empty:
+            st.info("ยังไม่มีข้อมูล Stock")
+        else:
+            # เอาเฉพาะ snapshot ล่าสุดต่อ item_id (fetch_stock เรียง snapshot_date desc มาแล้ว)
+            latest_stock = stock_df.drop_duplicates(subset="item_id", keep="first")
+            # เอาเฉพาะ SKU ที่ตรงกับ Item Master ปัจจุบัน — ตัวที่ไม่เจอปล่อยผ่านไปเงียบๆ ไม่ใช้เป็นตัวจับ
+            stock_view = latest_stock.merge(i_df[["item_id", "description"]], on="item_id", how="inner")
+            if stock_view.empty:
+                st.info("ไม่มี SKU ใน Stock ที่ตรงกับ Item Master ปัจจุบัน")
+            else:
+                stock_view = stock_view.rename(
+                    columns={
+                        "item_id": "Product Code",
+                        "description": "Description",
+                        "available_qty": "Available Qty",
+                        "snapshot_date": "Snapshot Date",
+                    }
+                )[["Product Code", "Description", "Available Qty", "Snapshot Date"]]
+                stock_view["Available Qty"] = stock_view["Available Qty"].map(fmt_comma)
+                st.dataframe(
+                    stock_view,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        **id_col_config(),
+                        "Available Qty": st.column_config.Column("Available Qty", width="small"),
+                        "Snapshot Date": st.column_config.Column("Snapshot Date", width="small"),
+                    },
+                )
 
         st.divider()
         st.subheader("Upload Performance data (STO)")
