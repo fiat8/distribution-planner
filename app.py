@@ -106,31 +106,44 @@ def id_col_config() -> dict:
     }
 
 
-# ความกว้างคอลัมน์ จ-ส / Demand / Total Case / Balance +/- ของตาราง Master Plan Allocation
-# เก็บไว้ที่เดียว ให้ทั้งตาราง Editor (จ-ส แก้ไขได้) และตารางแถว "รวมทั้งหมด" ด้านล่าง
-# ใช้ค่าความกว้างชุดเดียวกันเสมอ — ปรับที่นี่ที่เดียว ทั้ง 2 ตารางจะกว้างตรงกันตลอด ไม่มีวันเพี้ยน
-ALLOC_NUM_COL_WIDTHS = {
-    "Demand": "small",
-    "Total Case": "small",
-    "Balance +/-": "small",
-}
-
-
-def alloc_day_width(day_headers: list[str]) -> dict:
-    return {h: "small" for h in day_headers}
-
-
-# แปลงชื่อ width preset ของ st.column_config เป็น px จริง (small=75, medium=200, large=400)
-# ใช้ค่าเดียวกับที่ st.column_config ใช้จริง เพื่อให้แถว Sub total (HTML) กว้างตรงกับตาราง Editor ด้านบนเป๊ะ
-_WIDTH_PX = {"small": 75, "medium": 200, "large": 400}
-
 # รายชื่อคอลัมน์ข้อมูลอ้างอิง (Origin..Description) — ต้องตรงกับ key ของ id_col_config() เสมอ
 # ใช้เป็นตัวคัดแยก "คอลัมน์ตัวเลข" ออกจากคอลัมน์อ้างอิง เพื่อ merge เป็นช่อง Sub total
 ID_COLS = ["Origin", "Origin Name", "Destination", "Destination Name", "Product Code", "Description"]
 
-# ผลรวมความกว้างคอลัมน์ต้นทาง-Description (Origin, Origin Name, Destination, Destination Name,
-# Product Code = small, Description = medium) ตาม id_col_config() — ใช้ทำ cell merge ของแถว Sub total
-_ID_COLS_PX_TOTAL = _WIDTH_PX["small"] * 5 + _WIDTH_PX["medium"]
+# ============================================================================
+# ความกว้างคอลัมน์ของตาราง Master Plan Allocation โดยเฉพาะ (Editor + แถว Sub total เท่านั้น)
+# แยกออกจาก id_col_config() ที่ตารางอื่น (Demand Allocations, Master Plan, ฯลฯ) ใช้ร่วมกัน
+# โดยตั้งใจ — เพื่อไม่ให้การปรับขนาดตรงนี้กระทบตารางอื่นในแอป
+#
+# ใช้ค่า px ตรงๆ (ไม่ใช้ preset small/medium) ตัวใหญ่ขึ้นตามที่ขอ และ "โซนกรอกตัวเลข" (จ-ส) รวมถึง
+# Demand/Total Case/Balance +/- ทั้งหมดอยู่ใน ALLOC_NUM_COL_PX ค่าเดียว = กว้างเท่ากันทุกคอลัมน์เป๊ะ
+# ปรับตัวเลขที่นี่ที่เดียว ทั้งตาราง Editor และแถว Sub total จะกว้างตรงกันเสมอ ไม่มีวันเพี้ยน
+# ============================================================================
+ALLOC_ID_COL_PX = {
+    "Origin": 90, "Origin Name": 90, "Destination": 90, "Destination Name": 90,
+    "Product Code": 90, "Description": 220,
+}
+ALLOC_NUM_COL_PX = 105  # จ-ส (โซนกรอกตัวเลข) + Demand + Total Case + Balance +/- กว้างเท่ากันทุกคอลัมน์
+
+
+def alloc_id_col_config() -> dict:
+    """ความกว้างคอลัมน์อ้างอิงของ Master Plan Allocation โดยเฉพาะ (คนละชุดกับ id_col_config() ทั่วไป)"""
+    return {name: st.column_config.Column(name, width=px) for name, px in ALLOC_ID_COL_PX.items()}
+
+
+ALLOC_NUM_COL_WIDTHS = {
+    "Demand": ALLOC_NUM_COL_PX,
+    "Total Case": ALLOC_NUM_COL_PX,
+    "Balance +/-": ALLOC_NUM_COL_PX,
+}
+
+
+def alloc_day_width(day_headers: list[str]) -> dict:
+    return {h: ALLOC_NUM_COL_PX for h in day_headers}
+
+
+# ผลรวมความกว้างคอลัมน์ต้นทาง-Description ตาม ALLOC_ID_COL_PX — ใช้ทำ cell merge ของแถว Sub total
+_ID_COLS_PX_TOTAL = sum(ALLOC_ID_COL_PX[c] for c in ID_COLS)
 
 
 def render_subtotal_row_html(total_row: dict, num_cols: list[str]) -> str:
@@ -157,7 +170,7 @@ def render_subtotal_row_html(total_row: dict, num_cols: list[str]) -> str:
         f'text-align:left;{style_common}">Sub total</td>'
     ]
     for col in num_cols:
-        w = _WIDTH_PX["small"]
+        w = ALLOC_NUM_COL_PX
         cells.append(
             f'<td style="width:{w}px;min-width:{w}px;text-align:right;{style_common}">{total_row[col]}</td>'
         )
@@ -644,7 +657,7 @@ with tab1:
                 width="content",
                 disabled=ID_COLS + ["Demand", "Total Case", "Balance +/-"],
                 column_config={
-                    **id_col_config(),
+                    **alloc_id_col_config(),
                     **{
                         h: st.column_config.NumberColumn(h, format="%,d", width=w)
                         for h, w in alloc_day_width(day_headers).items()
