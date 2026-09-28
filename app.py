@@ -136,7 +136,13 @@ _ID_COLS_PX_TOTAL = _WIDTH_PX["small"] * 5 + _WIDTH_PX["medium"]
 def render_subtotal_row_html(total_row: dict, num_cols: list[str]) -> str:
     """
     แถว Sub total แบบ HTML แถวเดียว — ไม่มี Header ซ้ำ, merge คอลัมน์ต้นทาง-Description เป็นช่องเดียว
-    เขียนคำว่า "Sub total", ใช้สี background แบบเดียวกับ header (1 แถว) และกว้างตรงกับตาราง Editor ด้านบน
+    เขียนคำว่า "Sub total", ไม่ตั้งสีพื้นหลังเอง — ปล่อยโปร่งใสให้เห็นพื้นหลังหน้าเว็บจริงด้านหลังเสมอ
+    (ไม่ดูเป็นตารางแยก) และกว้างตรงกับตาราง Editor ด้านบน
+
+    หมายเหตุ: ทดสอบแล้วว่า Streamlit เวอร์ชันนี้ไม่ได้ประกาศตัวแปรสี "--background-color"/"--text-color"
+    ไว้ที่ :root จริง (var(...) จะ resolve เป็นค่าว่าง) จึง "ไม่" ใส่ background/color เอง แล้วปล่อยให้
+    browser inherit สีตัวอักษรและพื้นหลังจาก container ของ Streamlit เองแทน ซึ่งถูกต้องตรงธีมเสมอ
+    ไม่ว่า light/dark theme (ยืนยันด้วยการวัดค่าจริงจากหน้าเว็บที่ render แล้ว)
 
     num_cols ต้องส่งมาจากลำดับคอลัมน์จริงของตาราง (เช่น display_preview.columns หลังตัด ID_COLS ออก)
     ไม่ใช่ลิสต์ที่ไปเรียงเองแยกต่างหาก — เพื่อให้แถว Sub total ย้าย/เรียงตามลำดับคอลัมน์ของตารางด้านบน
@@ -144,9 +150,8 @@ def render_subtotal_row_html(total_row: dict, num_cols: list[str]) -> str:
     """
     style_common = (
         "padding:8px 12px;font-weight:600;"
-        "background:var(--secondary-background-color);"
         "border-top:1px solid rgba(128,128,128,0.3);"
-        "font-family:inherit;font-size:14px;color:var(--text-color);"
+        "font-family:inherit;font-size:14px;"
     )
     cells = [
         f'<td colspan="6" style="width:{_ID_COLS_PX_TOTAL}px;min-width:{_ID_COLS_PX_TOTAL}px;'
@@ -510,7 +515,7 @@ with tab1:
             edited_demand = st.data_editor(
                 display_df,
                 hide_index=True,
-                width="content",
+                use_container_width=True,
                 disabled=[
                     "Origin", "Origin Name", "Destination", "Destination Name",
                     "Product Code", "Description", "Total",
@@ -758,7 +763,7 @@ with tab1:
         mp_df = pd.concat([pd.DataFrame(mp_rows), pd.DataFrame([mp_total_row])], ignore_index=True)
         st.dataframe(
             mp_df,
-            width="content",
+            use_container_width=True,
             hide_index=True,
             column_config={
                 **id_col_config(),
@@ -880,7 +885,7 @@ with tab2:
                 stock_view["Available Qty"] = stock_view["Available Qty"].map(fmt_comma)
                 st.dataframe(
                     stock_view,
-                    width="content",
+                    use_container_width=True,
                     hide_index=True,
                     column_config={
                         **id_col_config(),
@@ -974,7 +979,7 @@ with tab3:
                 edited = st.data_editor(
                     display_adjust,
                     hide_index=True,
-                    width="content",
+                    use_container_width=True,
                     disabled=[
                         "Origin", "Origin Name", "Destination", "Destination Name",
                         "Product Code", "Description", "Total", "Required",
@@ -1097,7 +1102,7 @@ with tab4:
             else:
                 st.dataframe(
                     pd.DataFrame(changed_rows),
-                    width="content",
+                    use_container_width=True,
                     hide_index=True,
                     column_config={
                         **id_col_config(),
@@ -1125,7 +1130,7 @@ with tab4:
                 show = show.sort_values("revised_at", ascending=False)
                 st.dataframe(
                     show,
-                    width="content",
+                    use_container_width=True,
                     hide_index=True,
                     column_config={
                         "สินค้า": st.column_config.Column("สินค้า", width="medium"),
