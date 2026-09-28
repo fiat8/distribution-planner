@@ -36,6 +36,33 @@ def cases_to_trips(case_qty: float, cap_per_truck: float) -> int:
     return math.ceil(case_qty / cap_per_truck)
 
 
+def allocate_cases_ftl(
+    weekly_qty: float, day_ratio_pct: List[float], cap_per_truck: float
+) -> "tuple[List[float], float]":
+    """
+    จัดสรร weekly_qty ลง 6 วัน แบบ Full Truck Load (FTL) — ไม่ปัดเศษ
+    แต่ละวันจะได้เฉพาะจำนวนที่เป็น "เต็มคันรถ" เท่านั้น (floor ลงที่ cap_per_truck)
+    จัดลำดับ Priority ให้วันแรกๆ ก่อน (จันทร์ -> เสาร์ ตามลำดับ index 0..5) โดยใช้ day_ratio_pct (หน่วย 0-100)
+    เป็นเป้าหมายต่อวัน ส่วนที่เหลือซึ่งไม่พอเป็นเต็มคันรถ (ทั้งเกินและขาด) จะไม่ถูกจัดอัตโนมัติ —
+    ปล่อยเป็น "balance" ให้ผู้ใช้เลือกหยอดลงวันที่ต้องการเองในหน้า UI
+    คืนค่า (day_alloc: list 6 วัน, balance: จำนวนเคสที่ยังไม่ได้จัดสรร)
+    """
+    if len(day_ratio_pct) != 6:
+        raise ValueError("day_ratio_pct ต้องมี 6 ค่า (จ..ส)")
+    if cap_per_truck <= 0:
+        return [0.0] * 6, weekly_qty
+    day_alloc: List[float] = []
+    remaining = weekly_qty
+    for r in day_ratio_pct:
+        target = weekly_qty * (r / 100.0)
+        trucks = int(target // cap_per_truck)  # เต็มคันเท่านั้น ปัดลงเสมอ ไม่ปัดขึ้น
+        day_case = min(trucks * cap_per_truck, remaining)
+        day_case = max(day_case, 0.0)
+        day_alloc.append(day_case)
+        remaining -= day_case
+    return day_alloc, remaining
+
+
 @dataclass
 class PlanDay:
     day: int
