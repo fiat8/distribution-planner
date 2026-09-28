@@ -124,15 +124,23 @@ def alloc_day_width(day_headers: list[str]) -> dict:
 # ใช้ค่าเดียวกับที่ st.column_config ใช้จริง เพื่อให้แถว Sub total (HTML) กว้างตรงกับตาราง Editor ด้านบนเป๊ะ
 _WIDTH_PX = {"small": 75, "medium": 200, "large": 400}
 
+# รายชื่อคอลัมน์ข้อมูลอ้างอิง (Origin..Description) — ต้องตรงกับ key ของ id_col_config() เสมอ
+# ใช้เป็นตัวคัดแยก "คอลัมน์ตัวเลข" ออกจากคอลัมน์อ้างอิง เพื่อ merge เป็นช่อง Sub total
+ID_COLS = ["Origin", "Origin Name", "Destination", "Destination Name", "Product Code", "Description"]
+
 # ผลรวมความกว้างคอลัมน์ต้นทาง-Description (Origin, Origin Name, Destination, Destination Name,
 # Product Code = small, Description = medium) ตาม id_col_config() — ใช้ทำ cell merge ของแถว Sub total
 _ID_COLS_PX_TOTAL = _WIDTH_PX["small"] * 5 + _WIDTH_PX["medium"]
 
 
-def render_subtotal_row_html(total_row: dict, day_headers: list[str]) -> str:
+def render_subtotal_row_html(total_row: dict, num_cols: list[str]) -> str:
     """
     แถว Sub total แบบ HTML แถวเดียว — ไม่มี Header ซ้ำ, merge คอลัมน์ต้นทาง-Description เป็นช่องเดียว
     เขียนคำว่า "Sub total", ใช้สี background แบบเดียวกับ header (1 แถว) และกว้างตรงกับตาราง Editor ด้านบน
+
+    num_cols ต้องส่งมาจากลำดับคอลัมน์จริงของตาราง (เช่น display_preview.columns หลังตัด ID_COLS ออก)
+    ไม่ใช่ลิสต์ที่ไปเรียงเองแยกต่างหาก — เพื่อให้แถว Sub total ย้าย/เรียงตามลำดับคอลัมน์ของตารางด้านบน
+    โดยอัตโนมัติเสมอ ไม่ว่าภายหลังจะมีการสลับ/เพิ่ม/ลดคอลัมน์ตัวเลขในตารางนั้นแค่ไหนก็ตาม
     """
     style_common = (
         "padding:8px 12px;font-weight:600;"
@@ -144,7 +152,6 @@ def render_subtotal_row_html(total_row: dict, day_headers: list[str]) -> str:
         f'<td colspan="6" style="width:{_ID_COLS_PX_TOTAL}px;min-width:{_ID_COLS_PX_TOTAL}px;'
         f'text-align:left;{style_common}">Sub total</td>'
     ]
-    num_cols = list(day_headers) + ["Demand", "Total Case", "Balance +/-"]
     for col in num_cols:
         w = _WIDTH_PX["small"]
         cells.append(
@@ -631,10 +638,7 @@ with tab1:
                 display_preview,
                 hide_index=True,
                 use_container_width=True,
-                disabled=[
-                    "Origin", "Origin Name", "Destination", "Destination Name",
-                    "Product Code", "Description", "Demand", "Total Case", "Balance +/-",
-                ],
+                disabled=ID_COLS + ["Demand", "Total Case", "Balance +/-"],
                 column_config={
                     **id_col_config(),
                     **{
@@ -673,7 +677,10 @@ with tab1:
             "Total Case": fmt_accounting(live_total.sum()),
             "Balance +/-": fmt_accounting(live_balance.sum()),
         }
-        st.markdown(render_subtotal_row_html(total_row, day_headers), unsafe_allow_html=True)
+        # ลำดับคอลัมน์ตัวเลขเอามาจากลำดับจริงของตาราง Editor ด้านบน (display_preview) โดยตรง
+        # ไม่ได้ไปไล่เรียงแยกเอง — แถว Sub total จึงย้าย/เรียงตามตาราง Editor เสมอไม่ว่าจะจัดคอลัมน์ใหม่แค่ไหน
+        num_cols = [c for c in display_preview.columns if c not in ID_COLS]
+        st.markdown(render_subtotal_row_html(total_row, num_cols), unsafe_allow_html=True)
 
         not_balanced = edited_preview.index[live_balance != 0]
         if len(not_balanced):
