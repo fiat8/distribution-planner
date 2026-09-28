@@ -150,33 +150,37 @@ def render_subtotal_row_html(total_row: dict, num_cols: list[str]) -> str:
     """
     แถว Sub total แบบ HTML แถวเดียว — ไม่มี Header ซ้ำ, merge คอลัมน์ต้นทาง-Description เป็นช่องเดียว
     เขียนคำว่า "Sub total", ไม่ตั้งสีพื้นหลังเอง — ปล่อยโปร่งใสให้เห็นพื้นหลังหน้าเว็บจริงด้านหลังเสมอ
-    (ไม่ดูเป็นตารางแยก) และกว้างตรงกับตาราง Editor ด้านบน
+    (ไม่ดูเป็นตารางแยก)
 
-    หมายเหตุ: ทดสอบแล้วว่า Streamlit เวอร์ชันนี้ไม่ได้ประกาศตัวแปรสี "--background-color"/"--text-color"
-    ไว้ที่ :root จริง (var(...) จะ resolve เป็นค่าว่าง) จึง "ไม่" ใส่ background/color เอง แล้วปล่อยให้
-    browser inherit สีตัวอักษรและพื้นหลังจาก container ของ Streamlit เองแทน ซึ่งถูกต้องตรงธีมเสมอ
-    ไม่ว่า light/dark theme (ยืนยันด้วยการวัดค่าจริงจากหน้าเว็บที่ render แล้ว)
-
-    num_cols ต้องส่งมาจากลำดับคอลัมน์จริงของตาราง (เช่น display_preview.columns หลังตัด ID_COLS ออก)
-    ไม่ใช่ลิสต์ที่ไปเรียงเองแยกต่างหาก — เพื่อให้แถว Sub total ย้าย/เรียงตามลำดับคอลัมน์ของตารางด้านบน
-    โดยอัตโนมัติเสมอ ไม่ว่าภายหลังจะมีการสลับ/เพิ่ม/ลดคอลัมน์ตัวเลขในตารางนั้นแค่ไหนก็ตาม
+    ตาราง Editor ด้านบนตั้งเป็น use_container_width=True (เต็มจอ เหมือน Demand Allocations) ตามที่ขอ —
+    โหมดนี้ Streamlit จะ "ยืด" ความกว้างคอลัมน์ให้เต็มจอ "เมื่อจอกว้างกว่าผลรวม px ที่ตั้งไว้" เท่านั้น
+    ถ้าจอแคบกว่าผลรวม px ที่ตั้งไว้ Editor จะไม่บีบคอลัมน์เล็กลง แต่คงขนาดเดิมไว้แล้วเกิด scroll แนวนอน
+    แทน (ทดสอบยืนยันแล้ว) แถวนี้จึงทำตามพฤติกรรมเดียวกันทั้ง 2 กรณี: ใช้ width:100% (ยืดเต็มจอเมื่อจอกว้างพอ)
+    ร่วมกับ min-width:{total_px}px (ไม่บีบเล็กกว่าผลรวม px ที่ตั้งไว้เมื่อจอแคบ) แล้วแบ่งสัดส่วนคอลัมน์เป็น %
+    ตามน้ำหนัก px ที่ตั้งไว้ (ALLOC_ID_COL_PX/ALLOC_NUM_COL_PX) — ห่อด้วย div overflow-x:auto เพื่อให้ scroll
+    แนวนอนได้เหมือน Editor เวลาจอแคบ (ทดสอบยืนยันแล้วว่าขอบซ้าย/ขวาของแถวนี้ตรงกับ Editor เป๊ะทั้งที่จอกว้าง
+    และจอแคบ) ยังไม่การันตีตรงเป๊ะทุกพิกเซลของเส้นแบ่งแต่ละคอลัมน์ในทุกขนาดจอเหมือนโหมด width="content"
+    (นั่นคือ trade-off ของการเลือกเต็มจอแทน) แต่ขอบตารางโดยรวมและความกว้างคอลัมน์จะสัมพันธ์กันใกล้เคียงมาก
     """
     style_common = (
-        "padding:8px 12px;font-weight:600;"
-        "font-family:inherit;font-size:14px;"
+        "padding:8px 12px;font-weight:600;white-space:nowrap;"
+        "font-family:inherit;font-size:14px;box-sizing:border-box;"
     )
+    total_px = _ID_COLS_PX_TOTAL + ALLOC_NUM_COL_PX * len(num_cols)
+    id_pct = _ID_COLS_PX_TOTAL / total_px * 100
+    num_pct = ALLOC_NUM_COL_PX / total_px * 100
     cells = [
-        f'<td colspan="6" style="width:{_ID_COLS_PX_TOTAL}px;min-width:{_ID_COLS_PX_TOTAL}px;'
-        f'text-align:left;{style_common}">Sub total</td>'
+        f'<td colspan="6" style="width:{id_pct:.4f}%;text-align:left;{style_common}">Sub total</td>'
     ]
     for col in num_cols:
-        w = ALLOC_NUM_COL_PX
         cells.append(
-            f'<td style="width:{w}px;min-width:{w}px;text-align:right;{style_common}">{total_row[col]}</td>'
+            f'<td style="width:{num_pct:.4f}%;text-align:right;{style_common}">{total_row[col]}</td>'
         )
     return (
-        '<table style="width:auto;border-collapse:collapse;">'
+        '<div style="width:100%;overflow-x:auto;">'
+        f'<table style="width:100%;min-width:{total_px}px;table-layout:fixed;border-collapse:collapse;">'
         "<tbody><tr>" + "".join(cells) + "</tr></tbody></table>"
+        "</div>"
     )
 
 
@@ -654,7 +658,7 @@ with tab1:
             edited_preview = st.data_editor(
                 display_preview,
                 hide_index=True,
-                width="content",
+                use_container_width=True,
                 disabled=ID_COLS + ["Demand", "Total Case", "Balance +/-"],
                 column_config={
                     **alloc_id_col_config(),
