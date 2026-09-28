@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import time
 
 import pandas as pd
 import streamlit as st
@@ -105,6 +104,20 @@ def id_col_config() -> dict:
         "Product Code": st.column_config.Column("Product Code", width="small"),
         "Description": st.column_config.Column("Description", width="medium"),
     }
+
+
+def series_num_equal(a: pd.Series, b: pd.Series) -> bool:
+    """
+    เทียบค่าตัวเลข 2 ชุดโดยไม่สนใจ dtype — pandas Series.equals() คืน False ถ้า dtype ต่างกัน
+    (เช่น int64 vs float64) แม้ค่าจะเท่ากันเป๊ะ ซึ่ง st.data_editor มักคืนค่าเป็น float เสมอ
+    ถ้าใช้ .equals() ตรงๆ เช็ค "คำนวณเสร็จหรือยัง" จะวนซ้ำ (infinite rerun) ไม่จบ
+    """
+    try:
+        a2 = a.reindex(b.index).astype(float)
+        b2 = b.astype(float)
+        return bool((a2.round(6) == b2.round(6)).all())
+    except (TypeError, ValueError):
+        return a.equals(b)
 
 
 def find_item_row(items_df: pd.DataFrame, item_id: str):
@@ -403,12 +416,11 @@ with tab1:
         ) != list(base_editor_df.index):
             st.session_state[demand_state_key] = base_editor_df
 
-        st.caption("✏️ = ช่องที่แก้ไขได้ (จ-ส) — คอลัมน์อื่นคำนวณ/ดึงมาให้อัตโนมัติ")
+        st.caption("ช่องวัน (จ-ส) แก้ไขได้ — คอลัมน์อื่นคำนวณ/ดึงมาให้อัตโนมัติ")
 
         with st.spinner("กำลังคำนวณ Total..."):
             display_df = st.session_state[demand_state_key].copy()
             display_df["Total"] = display_df[day_headers].sum(axis=1)
-            time.sleep(0.2)  # หน่วงเล็กน้อยให้เห็นสถานะกำลังคำนวณหลังแก้ตัวเลข
 
             edited_demand = st.data_editor(
                 display_df,
@@ -421,9 +433,7 @@ with tab1:
                 column_config={
                     **id_col_config(),
                     **{
-                        h: st.column_config.NumberColumn(
-                            f"✏️ {h}", min_value=0, max_value=100, width="small"
-                        )
+                        h: st.column_config.NumberColumn(h, min_value=0, max_value=100, width="small")
                         for h in day_headers
                     },
                     "Total": st.column_config.NumberColumn(
@@ -435,8 +445,15 @@ with tab1:
                 },
                 key=f"demand_editor_{week_id}",
             )
-            edited_demand["Total"] = edited_demand[day_headers].sum(axis=1)
+            new_total = edited_demand[day_headers].sum(axis=1)
+            settled = series_num_equal(new_total, display_df["Total"])
+            edited_demand["Total"] = new_total
             st.session_state[demand_state_key] = edited_demand
+
+        if not settled:
+            # ตัวเลขวันที่เพิ่งแก้ยังไม่ถูกคำนวณเป็น Total ใหม่บนหน้าจอ (Streamlit จะโชว์ค่าเก่าไปอีก 1 จังหวะ)
+            # บังคับ rerun ทันทีเพื่อให้ Total คำนวณเสร็จและแสดงค่าที่ถูกต้อง ก่อนให้ผู้ใช้แก้ช่องถัดไป
+            st.rerun()
 
         totals = edited_demand["Total"]
         bad_rows = totals[totals != 100]
@@ -519,7 +536,7 @@ with tab1:
             "แล้วจึงกด Save to Master Plan"
         )
 
-        st.caption("✏️ = ช่องที่แก้ไขได้ (จ-ส) — คอลัมน์อื่นคำนวณ/ดึงมาให้อัตโนมัติ")
+        st.caption("ช่องวัน (จ-ส) แก้ไขได้ — คอลัมน์อื่นคำนวณ/ดึงมาให้อัตโนมัติ")
 
         preview_base = st.session_state[preview_key]
 
@@ -531,7 +548,6 @@ with tab1:
             display_preview["Demand"] = preview_base["Demand"].apply(fmt_accounting)
             display_preview["Total Case"] = total_case_num.apply(fmt_accounting)
             display_preview["Balance +/-"] = balance_num.apply(fmt_accounting)
-            time.sleep(0.2)  # หน่วงเล็กน้อยให้เห็นสถานะกำลังคำนวณหลังแก้ตัวเลข
 
             edited_preview = st.data_editor(
                 display_preview,
@@ -544,7 +560,7 @@ with tab1:
                 column_config={
                     **id_col_config(),
                     **{
-                        h: st.column_config.NumberColumn(f"✏️ {h}", format="%,d", width="small")
+                        h: st.column_config.NumberColumn(h, format="%,d", width="small")
                         for h in day_headers
                     },
                     "Demand": st.column_config.Column("Demand", width="small"),
@@ -553,6 +569,8 @@ with tab1:
                 },
                 key=f"alloc_editor_{week_id}",
             )
+            live_total = edited_preview[day_headers].sum(axis=1)
+            settled = series_num_equal(live_total, total_case_num)
 
         # เก็บค่าตัวเลขวัน (จ-ส) ที่แก้ไขกลับเข้า session_state — คอลัมน์อื่นคงจาก preview_base เดิม (ไม่ถูก stringify)
         new_state = preview_base.copy()
@@ -560,7 +578,11 @@ with tab1:
             new_state[h] = edited_preview[h]
         st.session_state[preview_key] = new_state
 
-        live_total = edited_preview[day_headers].sum(axis=1)
+        if not settled:
+            # Total Case / Balance ที่โชว์อยู่ยังไม่นับตัวเลขที่เพิ่งแก้ — บังคับ rerun ให้คำนวณเสร็จและแสดงค่าถูกต้อง
+            # ก่อนปล่อยให้ผู้ใช้แก้ช่องถัดไป หรือกด Save to Master Plan
+            st.rerun()
+
         live_balance = live_total - preview_base["Demand"]
         not_balanced = edited_preview.index[live_balance != 0]
         if len(not_balanced):
@@ -671,7 +693,10 @@ with tab1:
             clear_caches()
             for k in list(st.session_state.keys()):
                 if k.startswith(
-                    ("demand_editor_", "alloc_preview_", "alloc_editor_", "editor_", "reason_", "ratio_")
+                    (
+                        "demand_editor_", "alloc_preview_", "alloc_editor_",
+                        "adjust_editor_", "adjust_reason_", "editor_", "reason_", "ratio_",
+                    )
                 ) or k in ("dash_week", "mon_week", "tx_week"):
                     del st.session_state[k]
             st.success("ลบข้อมูลทั้งหมดแล้ว")
@@ -786,31 +811,48 @@ with tab3:
                     "Total": sum(day_vals),
                     "Required": int(drow["weekly_qty"]),
                 })
-            editor_df = pd.DataFrame(rows).set_index("demand_id")
+            editor_df = pd.DataFrame(rows).set_index("demand_id")  # baseline จริงจาก DB — ใช้เทียบหาว่าแถวไหนเปลี่ยน
+
+            # ค่าที่กำลังแก้อยู่ (draft) เก็บแยกใน session_state เพื่อให้ Total คำนวณสำเร็จ/แสดงถูกต้องก่อนแก้ช่องถัดไป
+            adjust_state_key = f"adjust_editor_data_{mon_week}"
+            if adjust_state_key not in st.session_state or list(
+                st.session_state[adjust_state_key].index
+            ) != list(editor_df.index):
+                st.session_state[adjust_state_key] = editor_df.copy()
 
             st.caption("แก้ตัวเลขในตารางได้หลายรายการพร้อมกัน — แต่ละแถวต้อง Total ให้ตรงกับ Required ก่อนบันทึก")
-            st.caption("✏️ = ช่องที่แก้ไขได้ (จ-ส)")
-            edited = st.data_editor(
-                editor_df,
-                hide_index=True,
-                use_container_width=True,
-                disabled=[
-                    "Origin", "Origin Name", "Destination", "Destination Name",
-                    "Product Code", "Description", "Total", "Required",
-                ],
-                column_config={
-                    **id_col_config(),
-                    **{
-                        h: st.column_config.NumberColumn(f"✏️ {h}", width="small")
-                        for h in mon_day_headers
-                    },
-                    "Total": st.column_config.Column("Total", width="small"),
-                    "Required": st.column_config.Column("Required", width="small"),
-                },
-                key=f"adjust_editor_{mon_week}",
-            )
+            st.caption("ช่องวัน (จ-ส) แก้ไขได้")
 
-            live_total = edited[mon_day_headers].sum(axis=1)
+            with st.spinner("กำลังคำนวณ Total..."):
+                display_adjust = st.session_state[adjust_state_key].copy()
+                display_adjust["Total"] = display_adjust[mon_day_headers].sum(axis=1)
+
+                edited = st.data_editor(
+                    display_adjust,
+                    hide_index=True,
+                    use_container_width=True,
+                    disabled=[
+                        "Origin", "Origin Name", "Destination", "Destination Name",
+                        "Product Code", "Description", "Total", "Required",
+                    ],
+                    column_config={
+                        **id_col_config(),
+                        **{h: st.column_config.NumberColumn(h, width="small") for h in mon_day_headers},
+                        "Total": st.column_config.Column("Total", width="small"),
+                        "Required": st.column_config.Column("Required", width="small"),
+                    },
+                    key=f"adjust_editor_{mon_week}",
+                )
+                live_total = edited[mon_day_headers].sum(axis=1)
+                settled = series_num_equal(live_total, display_adjust["Total"])
+                edited_state = edited.copy()
+                edited_state["Total"] = live_total
+                st.session_state[adjust_state_key] = edited_state
+
+            if not settled:
+                # Total ที่โชว์อยู่ในตารางยังไม่นับตัวเลขที่เพิ่งแก้ — บังคับ rerun ให้คำนวณเสร็จและแสดงค่าถูกต้องก่อน
+                st.rerun()
+
             mismatch = edited.index[live_total != edited["Required"]]
             if len(mismatch):
                 st.error(f"{len(mismatch)} รายการยอดรวมยังไม่ตรง Required — แก้ให้ครบก่อนบันทึก")
@@ -827,8 +869,12 @@ with tab3:
                 else:
                     plan_idx = plan_df.set_index(["demand_id", "day_of_week"])
                     changed = 0
+                    missing_item = []
                     for did in edited.index:
-                        it_row = i_df[i_df["item_id"] == d_idx.loc[did, "item_id"]].iloc[0]
+                        it_row = find_item_row(i_df, d_idx.loc[did, "item_id"])
+                        if it_row is None:
+                            missing_item.append(str(d_idx.loc[did, "item_id"]))
+                            continue
                         cap = float(it_row["cap_per_truck"])
                         for di, h in enumerate(mon_day_headers):
                             new_val = int(edited.loc[did, h])
@@ -841,6 +887,12 @@ with tab3:
                             plan_id = plan_idx.loc[key, "plan_id"]
                             insert_revision(plan_id, di, new_val, cases_to_trips(new_val, cap), reason)
                             changed += 1
+                    if missing_item:
+                        st.warning(
+                            f"ข้าม {len(missing_item)} รายการ เพราะหา Product Code ใน Item Master ไม่เจอ: "
+                            + ", ".join(sorted(set(missing_item)))
+                        )
+                    del st.session_state[adjust_state_key]
                     clear_caches()
                     st.success(f"บันทึกแล้ว {changed} รายการที่เปลี่ยน")
                     st.rerun()
