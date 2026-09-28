@@ -150,7 +150,6 @@ def render_subtotal_row_html(total_row: dict, num_cols: list[str]) -> str:
     """
     style_common = (
         "padding:8px 12px;font-weight:600;"
-        "border-top:1px solid rgba(128,128,128,0.3);"
         "font-family:inherit;font-size:14px;"
     )
     cells = [
