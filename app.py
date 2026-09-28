@@ -612,6 +612,29 @@ with tab1:
             st.rerun()
 
         live_balance = live_total - preview_base["Demand"]
+
+        total_row = {
+            "Origin": "", "Origin Name": "", "Destination": "", "Destination Name": "",
+            "Product Code": "", "Description": "รวมทั้งหมด",
+            **{h: fmt_comma(edited_preview[h].sum()) for h in day_headers},
+            "Demand": fmt_accounting(preview_base["Demand"].sum()),
+            "Total Case": fmt_accounting(live_total.sum()),
+            "Balance +/-": fmt_accounting(live_balance.sum()),
+        }
+        total_df = pd.DataFrame([total_row])[display_preview.columns]
+        st.dataframe(
+            total_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                **id_col_config(),
+                **{h: st.column_config.Column(h, width="small") for h in day_headers},
+                "Demand": st.column_config.Column("Demand", width="small"),
+                "Total Case": st.column_config.Column("Total Case", width="small"),
+                "Balance +/-": st.column_config.Column("Balance +/-", width="small"),
+            },
+        )
+
         not_balanced = edited_preview.index[live_balance != 0]
         if len(not_balanced):
             st.error(
@@ -663,9 +686,12 @@ with tab1:
         mp_pivot = plan_df.pivot(index="demand_id", columns="day_of_week", values="planned_case")
 
         mp_rows = []
+        day_sums = [0.0] * 6
         for did in mp_pivot.index:
             drow = d_idx.loc[did]
             day_vals = [pivot_val(mp_pivot, did, d) for d in range(6)]
+            for i in range(6):
+                day_sums[i] += day_vals[i]
             mp_rows.append({
                 "Origin": drow["origin_plant"],
                 "Origin Name": plant_lookup.get(drow["origin_plant"], "—"),
@@ -676,7 +702,13 @@ with tab1:
                 **{day_headers[i]: fmt_comma(day_vals[i]) for i in range(6)},
                 "Total": fmt_comma(sum(day_vals)),
             })
-        mp_df = pd.DataFrame(mp_rows)
+        mp_total_row = {
+            "Origin": "", "Origin Name": "", "Destination": "", "Destination Name": "",
+            "Product Code": "", "Description": "รวมทั้งหมด",
+            **{day_headers[i]: fmt_comma(day_sums[i]) for i in range(6)},
+            "Total": fmt_comma(sum(day_sums)),
+        }
+        mp_df = pd.concat([pd.DataFrame(mp_rows), pd.DataFrame([mp_total_row])], ignore_index=True)
         st.dataframe(
             mp_df,
             use_container_width=True,
