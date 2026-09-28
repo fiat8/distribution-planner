@@ -120,6 +120,42 @@ def alloc_day_width(day_headers: list[str]) -> dict:
     return {h: "small" for h in day_headers}
 
 
+# แปลงชื่อ width preset ของ st.column_config เป็น px จริง (small=75, medium=200, large=400)
+# ใช้ค่าเดียวกับที่ st.column_config ใช้จริง เพื่อให้แถว Sub total (HTML) กว้างตรงกับตาราง Editor ด้านบนเป๊ะ
+_WIDTH_PX = {"small": 75, "medium": 200, "large": 400}
+
+# ผลรวมความกว้างคอลัมน์ต้นทาง-Description (Origin, Origin Name, Destination, Destination Name,
+# Product Code = small, Description = medium) ตาม id_col_config() — ใช้ทำ cell merge ของแถว Sub total
+_ID_COLS_PX_TOTAL = _WIDTH_PX["small"] * 5 + _WIDTH_PX["medium"]
+
+
+def render_subtotal_row_html(total_row: dict, day_headers: list[str]) -> str:
+    """
+    แถว Sub total แบบ HTML แถวเดียว — ไม่มี Header ซ้ำ, merge คอลัมน์ต้นทาง-Description เป็นช่องเดียว
+    เขียนคำว่า "Sub total", ใช้สี background แบบเดียวกับ header (1 แถว) และกว้างตรงกับตาราง Editor ด้านบน
+    """
+    style_common = (
+        "padding:8px 12px;font-weight:600;"
+        "background:var(--secondary-background-color);"
+        "border-top:1px solid rgba(128,128,128,0.3);"
+        "font-family:inherit;font-size:14px;color:var(--text-color);"
+    )
+    cells = [
+        f'<td colspan="6" style="width:{_ID_COLS_PX_TOTAL}px;min-width:{_ID_COLS_PX_TOTAL}px;'
+        f'text-align:left;{style_common}">Sub total</td>'
+    ]
+    num_cols = list(day_headers) + ["Demand", "Total Case", "Balance +/-"]
+    for col in num_cols:
+        w = _WIDTH_PX["small"]
+        cells.append(
+            f'<td style="width:{w}px;min-width:{w}px;text-align:right;{style_common}">{total_row[col]}</td>'
+        )
+    return (
+        '<table style="width:auto;border-collapse:collapse;">'
+        "<tbody><tr>" + "".join(cells) + "</tr></tbody></table>"
+    )
+
+
 def series_num_equal(a: pd.Series, b: pd.Series) -> bool:
     """
     เทียบค่าตัวเลข 2 ชุดโดยไม่สนใจ dtype — pandas Series.equals() คืน False ถ้า dtype ต่างกัน
@@ -632,30 +668,12 @@ with tab1:
         live_balance = live_total - preview_base["Demand"]
 
         total_row = {
-            "Origin": "", "Origin Name": "", "Destination": "", "Destination Name": "",
-            "Product Code": "", "Description": "รวมทั้งหมด",
             **{h: fmt_comma(edited_preview[h].sum()) for h in day_headers},
             "Demand": fmt_accounting(preview_base["Demand"].sum()),
             "Total Case": fmt_accounting(live_total.sum()),
             "Balance +/-": fmt_accounting(live_balance.sum()),
         }
-        total_df = pd.DataFrame([total_row])[display_preview.columns]
-        st.dataframe(
-            total_df,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                **id_col_config(),
-                **{h: st.column_config.Column(h, width=w) for h, w in alloc_day_width(day_headers).items()},
-                "Demand": st.column_config.Column("Demand", width=ALLOC_NUM_COL_WIDTHS["Demand"]),
-                "Total Case": st.column_config.Column(
-                    "Total Case", width=ALLOC_NUM_COL_WIDTHS["Total Case"]
-                ),
-                "Balance +/-": st.column_config.Column(
-                    "Balance +/-", width=ALLOC_NUM_COL_WIDTHS["Balance +/-"]
-                ),
-            },
-        )
+        st.markdown(render_subtotal_row_html(total_row, day_headers), unsafe_allow_html=True)
 
         not_balanced = edited_preview.index[live_balance != 0]
         if len(not_balanced):
@@ -726,7 +744,7 @@ with tab1:
             })
         mp_total_row = {
             "Origin": "", "Origin Name": "", "Destination": "", "Destination Name": "",
-            "Product Code": "", "Description": "รวมทั้งหมด",
+            "Product Code": "", "Description": "Sub total",
             **{day_headers[i]: fmt_comma(day_sums[i]) for i in range(6)},
             "Total": fmt_comma(sum(day_sums)),
         }
