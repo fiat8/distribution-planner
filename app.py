@@ -165,6 +165,7 @@ def render_subtotal_row_html(total_row: dict, num_cols: list[str]) -> str:
     style_common = (
         "padding:8px 12px;font-weight:600;white-space:nowrap;"
         "font-family:inherit;font-size:14px;box-sizing:border-box;"
+        "background-color:transparent;border:none;"
     )
     total_px = _ID_COLS_PX_TOTAL + ALLOC_NUM_COL_PX * len(num_cols)
     id_pct = _ID_COLS_PX_TOTAL / total_px * 100
@@ -178,7 +179,8 @@ def render_subtotal_row_html(total_row: dict, num_cols: list[str]) -> str:
         )
     return (
         '<div style="width:100%;overflow-x:auto;">'
-        f'<table style="width:100%;min-width:{total_px}px;table-layout:fixed;border-collapse:collapse;">'
+        f'<table style="width:100%;min-width:{total_px}px;table-layout:fixed;'
+        'border-collapse:collapse;background-color:transparent;border:none;">'
         "<tbody><tr>" + "".join(cells) + "</tr></tbody></table>"
         "</div>"
     )
