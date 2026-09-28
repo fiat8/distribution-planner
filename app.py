@@ -106,6 +106,20 @@ def id_col_config() -> dict:
     }
 
 
+# ความกว้างคอลัมน์ จ-ส / Demand / Total Case / Balance +/- ของตาราง Master Plan Allocation
+# เก็บไว้ที่เดียว ให้ทั้งตาราง Editor (จ-ส แก้ไขได้) และตารางแถว "รวมทั้งหมด" ด้านล่าง
+# ใช้ค่าความกว้างชุดเดียวกันเสมอ — ปรับที่นี่ที่เดียว ทั้ง 2 ตารางจะกว้างตรงกันตลอด ไม่มีวันเพี้ยน
+ALLOC_NUM_COL_WIDTHS = {
+    "Demand": "small",
+    "Total Case": "small",
+    "Balance +/-": "small",
+}
+
+
+def alloc_day_width(day_headers: list[str]) -> dict:
+    return {h: "small" for h in day_headers}
+
+
 def series_num_equal(a: pd.Series, b: pd.Series) -> bool:
     """
     เทียบค่าตัวเลข 2 ชุดโดยไม่สนใจ dtype — pandas Series.equals() คืน False ถ้า dtype ต่างกัน
@@ -588,12 +602,16 @@ with tab1:
                 column_config={
                     **id_col_config(),
                     **{
-                        h: st.column_config.NumberColumn(h, format="%,d", width="small")
-                        for h in day_headers
+                        h: st.column_config.NumberColumn(h, format="%,d", width=w)
+                        for h, w in alloc_day_width(day_headers).items()
                     },
-                    "Demand": st.column_config.Column("Demand", width="small"),
-                    "Total Case": st.column_config.Column("Total Case", width="small"),
-                    "Balance +/-": st.column_config.Column("Balance +/-", width="small"),
+                    "Demand": st.column_config.Column("Demand", width=ALLOC_NUM_COL_WIDTHS["Demand"]),
+                    "Total Case": st.column_config.Column(
+                        "Total Case", width=ALLOC_NUM_COL_WIDTHS["Total Case"]
+                    ),
+                    "Balance +/-": st.column_config.Column(
+                        "Balance +/-", width=ALLOC_NUM_COL_WIDTHS["Balance +/-"]
+                    ),
                 },
                 key=f"alloc_editor_{week_id}",
             )
@@ -628,10 +646,14 @@ with tab1:
             use_container_width=True,
             column_config={
                 **id_col_config(),
-                **{h: st.column_config.Column(h, width="small") for h in day_headers},
-                "Demand": st.column_config.Column("Demand", width="small"),
-                "Total Case": st.column_config.Column("Total Case", width="small"),
-                "Balance +/-": st.column_config.Column("Balance +/-", width="small"),
+                **{h: st.column_config.Column(h, width=w) for h, w in alloc_day_width(day_headers).items()},
+                "Demand": st.column_config.Column("Demand", width=ALLOC_NUM_COL_WIDTHS["Demand"]),
+                "Total Case": st.column_config.Column(
+                    "Total Case", width=ALLOC_NUM_COL_WIDTHS["Total Case"]
+                ),
+                "Balance +/-": st.column_config.Column(
+                    "Balance +/-", width=ALLOC_NUM_COL_WIDTHS["Balance +/-"]
+                ),
             },
         )
 
