@@ -200,6 +200,56 @@ def series_num_equal(a: pd.Series, b: pd.Series) -> bool:
         return a.equals(b)
 
 
+def apply_allocation_helper(
+    preview_base: pd.DataFrame,
+    live_balance: pd.Series,
+    day_headers: list[str],
+    ratio_lookup: dict,
+    mode: str,
+) -> pd.DataFrame:
+    """
+    Allocation helper (AH) — เติม/ลด Balance ที่เหลือให้ลงตัว (=0) อัตโนมัติ ทำเฉพาะแถวที่ Balance != 0
+    เท่านั้น และทำเฉพาะวันที่มี "Portion Allocated %" (day_ratio > 0) ของแถวนั้นๆ เท่านั้น — ใส่เป็น
+    จำนวนเต็มเสมอ
+
+    - AH1: เกลี่ยผลต่างเป็นจำนวนเต็มลงทุกวันที่เข้าเกณฑ์ให้เท่ากันที่สุด เศษที่หารไม่ลงตัวโปะให้วันแรกๆ
+      ก่อน (จันทร์ก่อน) — เช่น Balance ขาด 23 หารลง 5 วัน = วันละ 4 แล้วโปะ +1 ให้ 3 วันแรก (จ,อ,พ)
+    - AH2: ยัดผลต่างทั้งหมดลงวันสุดท้ายที่เข้าเกณฑ์วันเดียว (เช่น ตั้ง % ไว้ จ-ศ ก็ยัดลงวันศุกร์ทั้งหมด)
+
+    ปกติ Balance หลัง Proceed จะติดลบเสมอ (FTL จัดไม่เกิน Demand) ต้อง "เติม" — แต่ถ้ามีคนแก้ตัวเลขมือ
+    จนเกินไปก่อนกด AH (Balance เป็นบวก) จะ "ลด" แทน ทิศทางเดียวกับ logic ข้างต้นแต่กลับเครื่องหมาย และ
+    ลดไม่ให้ค่าต่ำกว่า 0 (ถ้าลดจนติดลบไม่ได้ จะลดเท่าที่ทำได้ ส่วนที่เหลือค้างเป็น Balance ไม่ลงตัว
+    ให้ผู้ใช้ปรับเองต่อ — จะขึ้น error "ยอด Balance ยังไม่ลงตัว" ให้เห็นตามปกติ)
+    """
+    new_df = preview_base.copy()
+    not_balanced_ids = live_balance.index[live_balance != 0]
+    for did in not_balanced_ids:
+        ratio = ratio_lookup.get(did)
+        if not ratio:
+            continue
+        eligible_days = [day_headers[i] for i in range(6) if float(ratio[i]) > 0]
+        if not eligible_days:
+            continue
+        delta = -int(round(live_balance[did]))  # บวก = ต้องเติม, ลบ = ต้องลด
+        if delta == 0:
+            continue
+        n = len(eligible_days)
+        if mode == "AH1":
+            base, rem = divmod(abs(delta), n)
+            sign = 1 if delta > 0 else -1
+            for i, day in enumerate(eligible_days):
+                amount = base + (1 if i < rem else 0)
+                if amount == 0:
+                    continue
+                cur = float(new_df.at[did, day])
+                new_df.at[did, day] = cur + amount if sign > 0 else max(0.0, cur - amount)
+        elif mode == "AH2":
+            day = eligible_days[-1]
+            cur = float(new_df.at[did, day])
+            new_df.at[did, day] = cur + delta if delta > 0 else max(0.0, cur + delta)
+    return new_df
+
+
 def find_item_row(items_df: pd.DataFrame, item_id: str):
     """หา row ของ item_master ตาม item_id (normalize รูปแบบรหัสก่อนเทียบ) คืน None ถ้าไม่เจอ แทนที่จะพัง"""
     if items_df.empty:
@@ -431,8 +481,27 @@ with tab1:
 
     wk_col1, wk_col2 = st.columns(2)
     week_number = wk_col1.number_input("Week Number", min_value=1, step=1, value=default_week_number())
-    week_start = wk_col2.date_input("Week Start Date (Monday)", value=default_week_start())
     week_id = f"W{int(week_number)}"
+
+    # เช็คจาก DB ว่าสัปดาห์นี้ (week_id) เคยมีข้อมูล Demand (เคย Import แล้ว) หรือยัง — ถ้าเคยแล้ว
+    # ล็อกช่อง Week Start Date เป็น read-only กันไม่ให้แก้วันที่ภายหลัง เพราะชื่อคอลัมน์วัน (day_headers)
+    # ที่ผูกกับตัวเลขในตาราง Demand Allocations / Master Plan Allocation preview ถูก cache ไว้ใน
+    # session_state ตามชื่อคอลัมน์ ณ ตอน Import — ถ้าวันที่เปลี่ยนหลังจากนั้น ชื่อคอลัมน์จะไม่ตรงกับ
+    # ตารางที่ cache ไว้ เกิด KeyError ("None of [...] are in the columns") ตั้งใจไม่ทำทางแก้ไขวันที่
+    # ของสัปดาห์เดิมในหน้านี้ — ถ้าวันที่ผิดตอน Import ให้ Import ใหม่ด้วย Week Number อื่นแทน
+    demand_df = fetch_demand(week_id)
+    week_locked = not demand_df.empty
+    if week_locked:
+        locked_date = pd.to_datetime(demand_df["week_start_date"].iloc[0]).date()
+        week_start = wk_col2.date_input(
+            "Week Start Date (Monday)",
+            value=locked_date,
+            disabled=True,
+            help="ล็อกไว้เพราะสัปดาห์นี้มีข้อมูล Demand อยู่แล้ว — ถ้าวันที่ผิด ให้ Import ใหม่ด้วย Week Number อื่นแทน",
+        )
+        st.caption("🔒 Week Start Date ถูกล็อก เพราะสัปดาห์นี้ (Week Number นี้) มีข้อมูล Demand อยู่แล้ว")
+    else:
+        week_start = wk_col2.date_input("Week Start Date (Monday)", value=default_week_start())
     day_headers = compute_day_headers(week_start)
 
     uploaded = st.file_uploader("Select Master file", type=["xlsx"])
@@ -494,7 +563,7 @@ with tab1:
     plant_lookup = plants_df.set_index("plant_code")["plant_name"].to_dict() if not plants_df.empty else {}
 
     st.subheader("Demand Allocations")
-    demand_df = fetch_demand(week_id)
+    # demand_df ดึงมาแล้วด้านบน (ใช้เช็คล็อก Week Start Date ด้วย) ไม่ต้อง fetch ซ้ำ
 
     if demand_df.empty:
         st.info("ยังไม่มี Demand สำหรับสัปดาห์นี้ — นำเข้าไฟล์ก่อนด้านบน")
@@ -711,6 +780,25 @@ with tab1:
                 f"{len(not_balanced)} รายการยอด Balance ยังไม่ลงตัว (ต้องเป็น 0) — "
                 "แก้ตัวเลขในช่องวันให้ครบก่อนบันทึก"
             )
+
+        # Allocation helper (AH) — เติม/ลด Balance ที่เหลือให้ลงตัวอัตโนมัติทุกแถวที่ไม่ลงตัวในคราวเดียว
+        # ใช้ % Portion Allocated (day_ratio) ที่ตั้งไว้ตอน Demand Allocations เป็นตัวกำหนดว่าวันไหนเข้าเกณฑ์
+        ah_col1, ah_col2, _ah_col3 = st.columns([1, 1, 4])
+        ah_ratio_lookup = demand_df.set_index("demand_id")["day_ratio"].to_dict()
+        ah1_clicked = ah_col1.button(
+            "AH1", disabled=not len(not_balanced),
+            help="Allocation helper 1 — เกลี่ย Balance ที่เหลือลงทุกวันที่ตั้ง Portion % ไว้ เท่าๆ กัน (จำนวนเต็ม)",
+        )
+        ah2_clicked = ah_col2.button(
+            "AH2", disabled=not len(not_balanced),
+            help="Allocation helper 2 — ยัด Balance ที่เหลือทั้งหมดลงวันสุดท้ายที่ตั้ง Portion % ไว้วันเดียว",
+        )
+        if ah1_clicked or ah2_clicked:
+            mode = "AH1" if ah1_clicked else "AH2"
+            st.session_state[preview_key] = apply_allocation_helper(
+                preview_base, live_balance, day_headers, ah_ratio_lookup, mode
+            )
+            st.rerun()
 
         if st.button("Save to Master Plan", type="primary"):
             if len(not_balanced):
