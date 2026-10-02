@@ -733,20 +733,24 @@ with tab1:
         # AH1/AH2: เติม/ลด Balance ที่เหลือให้ลงตัวอัตโนมัติทุกแถวที่ไม่ลงตัวในคราวเดียว โดยใช้ % Portion
         # Allocated (day_ratio) ที่ตั้งไว้ตอน Demand Allocations เป็นตัวกำหนดว่าวันไหนเข้าเกณฑ์
         ah_ratio_lookup = demand_df.set_index("demand_id")["day_ratio"].to_dict()
-        btn_col1, btn_col2, btn_col3, _btn_col4 = st.columns([1, 1, 1, 3])
-        default_clicked = btn_col1.button(
-            "Default",
-            disabled=default_key not in st.session_state,
-            help="รีเซ็ตกลับไปเป็นค่าที่คำนวณได้ตอนกด Proceed ครั้งแรก (ล้างการแก้ไข/Allocation helper ทั้งหมด)",
-        )
-        ah1_clicked = btn_col2.button(
-            "AH1", disabled=not len(not_balanced_now),
-            help="Allocation helper 1 — เกลี่ย Balance ที่เหลือลงทุกวันที่ตั้ง Portion % ไว้ เท่าๆ กัน (จำนวนเต็ม)",
-        )
-        ah2_clicked = btn_col3.button(
-            "AH2", disabled=not len(not_balanced_now),
-            help="Allocation helper 2 — ยัด Balance ที่เหลือทั้งหมดลงวันสุดท้ายที่ตั้ง Portion % ไว้วันเดียว",
-        )
+        # ใช้ st.container(horizontal=True) แทน st.columns — ปุ่มจะกว้างเท่าตัวอักษรจริง (shrink-to-fit)
+        # ไม่ถูกยืด/บีบตามสัดส่วนคอลัมน์เหมือน st.columns (ซึ่งพอจอแคบลงจะบีบจนตัวอักษรโดนตัด "Def...")
+        # gap="small" ควบคุมระยะห่างระหว่างปุ่มให้ชิดกันคงที่ 16px ไม่ว่าจอกว้างแค่ไหน (ทดสอบยืนยันแล้วว่า
+        # ไม่มีคำโดนตัดที่ทุกความกว้างจอ 700-1920px)
+        with st.container(horizontal=True, gap="small"):
+            default_clicked = st.button(
+                "Default",
+                disabled=default_key not in st.session_state,
+                help="รีเซ็ตกลับไปเป็นค่าที่คำนวณได้ตอนกด Proceed ครั้งแรก (ล้างการแก้ไข/Allocation helper ทั้งหมด)",
+            )
+            ah1_clicked = st.button(
+                "AH1", disabled=not len(not_balanced_now),
+                help="Allocation helper 1 — เกลี่ย Balance ที่เหลือลงทุกวันที่ตั้ง Portion % ไว้ เท่าๆ กัน (จำนวนเต็ม)",
+            )
+            ah2_clicked = st.button(
+                "AH2", disabled=not len(not_balanced_now),
+                help="Allocation helper 2 — ยัด Balance ที่เหลือทั้งหมดลงวันสุดท้ายที่ตั้ง Portion % ไว้วันเดียว",
+            )
         if default_clicked and default_key in st.session_state:
             st.session_state[preview_key] = st.session_state[default_key].copy()
             st.rerun()
