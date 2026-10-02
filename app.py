@@ -8,7 +8,9 @@ from __future__ import annotations
 import datetime as dt
 import math
 
+import altair as alt
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from supabase import Client, create_client
 
@@ -958,13 +960,16 @@ with tab2:
         plant_lookup = p_df.set_index("plant_code")["plant_name"].to_dict() if not p_df.empty else {}
         d_df = d_df.copy()
         d_df["destination_name"] = d_df["destination"].map(lambda c: plant_lookup.get(c, c))
+        d_df["origin_name"] = d_df["origin_plant"].map(lambda c: plant_lookup.get(c, c))
         demand_ids = d_df["demand_id"].tolist()
         cur_df = fetch_current_plan_rows(demand_ids)
 
         if cur_df.empty:
             st.info("สัปดาห์นี้ยังไม่ได้คำนวณ Master Plan")
         else:
-            merged = cur_df.merge(d_df[["demand_id", "destination_name"]], on="demand_id")
+            merged = cur_df.merge(
+                d_df[["demand_id", "origin_plant", "origin_name", "destination_name"]], on="demand_id"
+            )
             total_case = merged["current_case"].sum()
             total_trip = merged["current_trip"].sum()
             c1, c2, c3, c4 = st.columns(4)
@@ -981,9 +986,61 @@ with tab2:
             pivot["รวม"] = pivot.sum(axis=1)
             st.dataframe(pivot, use_container_width=True)
 
+            # กราฟ Bar รายวัน — ใช้ Altair วาดเอง (ไม่ใช้ st.bar_chart ตรงๆ) เพราะ st.bar_chart เรียงแกน X
+            # ตามลำดับตัวอักษร (Vega-Lite default sort = ascending ตามค่าข้อความ) ซึ่งสำหรับอักษรไทย
+            # "จ,อ,พ,พฤ,ศ,ส" จะเรียงเป็น จ,พ,พฤ,ศ,ส,อ (อังคารไปอยู่ท้ายสุด) ไม่ใช่ จ-ส ตามลำดับวันจริง —
+            # ต้องระบุ sort=DAY_LABELS ให้ชัดเจนเพื่อบังคับลำดับแกน X เป็น จ-ส เสมอไม่ว่าข้อมูลจะมาลำดับไหน
             by_day = merged.groupby("day_of_week")["current_case"].sum().reindex(range(6), fill_value=0)
-            by_day.index = DAY_LABELS
-            st.bar_chart(by_day)
+            by_day_df = pd.DataFrame({"วัน": DAY_LABELS, "เคส": by_day.values})
+            day_bar = (
+                alt.Chart(by_day_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("วัน:N", sort=DAY_LABELS, title=None, axis=alt.Axis(labelAngle=0)),
+                    y=alt.Y("เคส:Q", title="เคส"),
+                    tooltip=["วัน", alt.Tooltip("เคส:Q", format=",.0f")],
+                )
+            )
+            st.altair_chart(day_bar, use_container_width=True)
+
+            st.markdown("**Diagram: Origin → Destination**")
+            st.caption("เส้นหนา = ปริมาณเคสรวมทั้งสัปดาห์มาก — แสดงเฉพาะคู่ Origin-Destination ที่มีการจัดสรรจริง (เคส > 0)")
+            flow = (
+                merged.groupby(["origin_name", "destination_name"])["current_case"]
+                .sum()
+                .reset_index()
+            )
+            flow = flow[flow["current_case"] > 0]
+            if flow.empty:
+                st.info("ยังไม่มีปริมาณเคสที่จัดสรรแล้วในสัปดาห์นี้ — ไม่มีข้อมูลสำหรับวาด Diagram")
+            else:
+                origins = sorted(flow["origin_name"].unique())
+                destinations = sorted(flow["destination_name"].unique())
+                # โหนดฝั่ง Origin กับฝั่ง Destination แยกชุดกันเสมอ (คนละ index) แม้ชื่อจะซ้ำกัน
+                # กันกรณีรหัส Plant เดียวกันถูกใช้เป็นทั้ง Origin และ Destination ในข้อมูลจริง
+                nodes = list(origins) + list(destinations)
+                origin_idx = {name: i for i, name in enumerate(origins)}
+                dest_idx = {name: i + len(origins) for i, name in enumerate(destinations)}
+                sankey = go.Figure(
+                    data=[
+                        go.Sankey(
+                            node=dict(
+                                label=nodes,
+                                pad=16,
+                                thickness=16,
+                                color="#4C78A8",
+                            ),
+                            link=dict(
+                                source=[origin_idx[o] for o in flow["origin_name"]],
+                                target=[dest_idx[d] for d in flow["destination_name"]],
+                                value=flow["current_case"].tolist(),
+                                color="rgba(76, 120, 168, 0.35)",
+                            ),
+                        )
+                    ]
+                )
+                sankey.update_layout(height=max(300, 40 * max(len(origins), len(destinations))), margin=dict(l=0, r=0, t=10, b=10))
+                st.plotly_chart(sankey, use_container_width=True)
 
         st.divider()
         st.subheader("Stock Overview")
