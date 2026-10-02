@@ -700,9 +700,11 @@ with tab1:
                         + "; ".join(zero_alloc)
                     )
                 if preview_rows:
-                    st.session_state[f"alloc_preview_{week_id}"] = pd.DataFrame(preview_rows).set_index(
-                        "demand_id"
-                    )
+                    _preview_df = pd.DataFrame(preview_rows).set_index("demand_id")
+                    st.session_state[f"alloc_preview_{week_id}"] = _preview_df
+                    # เก็บ snapshot ตั้งต้น (ค่าที่คำนวณได้ตอนกด Proceed ครั้งนี้ ก่อนมีการแก้ไข/Allocation
+                    # helper ใดๆ) แยกไว้ต่างหาก ไม่ถูกแก้ตาม — ใช้ให้ปุ่ม "Default" รีเซ็ตกลับมาที่นี่ได้
+                    st.session_state[f"alloc_preview_default_{week_id}"] = _preview_df.copy()
                     st.success(
                         f"คำนวณ Master Plan Allocation แบบ Full Truck Load แล้ว {len(preview_rows)} รายการ "
                         f"(ข้าม {skipped} รายการที่มี Master Plan อยู่แล้ว) — ปรับ Balance ให้ลงตัวแล้วกด "
@@ -716,23 +718,46 @@ with tab1:
     # Master Plan Allocation — preview แบบ Full Truck Load ที่ยังไม่บันทึก รอ user ปรับ Balance
     # -----------------------------------------------------------
     preview_key = f"alloc_preview_{week_id}"
+    default_key = f"alloc_preview_default_{week_id}"
     if preview_key in st.session_state and not st.session_state[preview_key].empty:
         st.divider()
         st.subheader("Master Plan Allocation")
-        st.caption(
-            "คำนวณแบบ Full Truck Load (จัดเฉพาะเต็มคัน ไม่ปัดเศษ) โดยให้ Priority วันแรกๆ ก่อน — "
-            "ส่วนที่เกินหรือขาด (Balance) ให้ปรับตัวเลขในช่องวันของแต่ละแถวเองจนลงตัว (Balance = 0) "
-            "แล้วจึงกด Save to Master Plan"
-        )
-
-        st.caption("ช่องวัน (จ-ส) แก้ไขได้ — คอลัมน์อื่นคำนวณ/ดึงมาให้อัตโนมัติ")
 
         preview_base = st.session_state[preview_key]
+        total_case_num = preview_base[day_headers].sum(axis=1)
+        balance_num = total_case_num - preview_base["Demand"]
+        not_balanced_now = preview_base.index[balance_num != 0]
+
+        # Default / AH1 / AH2 — วางไว้เหนือตาราง Editor ให้จัดการ Balance ได้ทันทีก่อนเลื่อนลงไปแก้เอง
+        # Default: รีเซ็ตกลับไปเป็นค่าที่คำนวณได้ตอนกด Proceed ครั้งแรก (ล้างการแก้ไข/AH ทั้งหมดในตารางนี้)
+        # AH1/AH2: เติม/ลด Balance ที่เหลือให้ลงตัวอัตโนมัติทุกแถวที่ไม่ลงตัวในคราวเดียว โดยใช้ % Portion
+        # Allocated (day_ratio) ที่ตั้งไว้ตอน Demand Allocations เป็นตัวกำหนดว่าวันไหนเข้าเกณฑ์
+        ah_ratio_lookup = demand_df.set_index("demand_id")["day_ratio"].to_dict()
+        btn_col1, btn_col2, btn_col3, _btn_col4 = st.columns([1, 1, 1, 3])
+        default_clicked = btn_col1.button(
+            "Default",
+            disabled=default_key not in st.session_state,
+            help="รีเซ็ตกลับไปเป็นค่าที่คำนวณได้ตอนกด Proceed ครั้งแรก (ล้างการแก้ไข/Allocation helper ทั้งหมด)",
+        )
+        ah1_clicked = btn_col2.button(
+            "AH1", disabled=not len(not_balanced_now),
+            help="Allocation helper 1 — เกลี่ย Balance ที่เหลือลงทุกวันที่ตั้ง Portion % ไว้ เท่าๆ กัน (จำนวนเต็ม)",
+        )
+        ah2_clicked = btn_col3.button(
+            "AH2", disabled=not len(not_balanced_now),
+            help="Allocation helper 2 — ยัด Balance ที่เหลือทั้งหมดลงวันสุดท้ายที่ตั้ง Portion % ไว้วันเดียว",
+        )
+        if default_clicked and default_key in st.session_state:
+            st.session_state[preview_key] = st.session_state[default_key].copy()
+            st.rerun()
+        if ah1_clicked or ah2_clicked:
+            mode = "AH1" if ah1_clicked else "AH2"
+            st.session_state[preview_key] = apply_allocation_helper(
+                preview_base, balance_num, day_headers, ah_ratio_lookup, mode
+            )
+            st.rerun()
 
         with st.spinner("กำลังคำนวณ Total Case / Balance..."):
-            total_case_num = preview_base[day_headers].sum(axis=1)
-            balance_num = total_case_num - preview_base["Demand"]
-
             display_preview = preview_base.copy()
             display_preview["Demand"] = preview_base["Demand"].apply(fmt_accounting)
             display_preview["Total Case"] = total_case_num.apply(fmt_accounting)
@@ -792,25 +817,6 @@ with tab1:
                 f"{len(not_balanced)} รายการยอด Balance ยังไม่ลงตัว (ต้องเป็น 0) — "
                 "แก้ตัวเลขในช่องวันให้ครบก่อนบันทึก"
             )
-
-        # Allocation helper (AH) — เติม/ลด Balance ที่เหลือให้ลงตัวอัตโนมัติทุกแถวที่ไม่ลงตัวในคราวเดียว
-        # ใช้ % Portion Allocated (day_ratio) ที่ตั้งไว้ตอน Demand Allocations เป็นตัวกำหนดว่าวันไหนเข้าเกณฑ์
-        ah_col1, ah_col2, _ah_col3 = st.columns([1, 1, 4])
-        ah_ratio_lookup = demand_df.set_index("demand_id")["day_ratio"].to_dict()
-        ah1_clicked = ah_col1.button(
-            "AH1", disabled=not len(not_balanced),
-            help="Allocation helper 1 — เกลี่ย Balance ที่เหลือลงทุกวันที่ตั้ง Portion % ไว้ เท่าๆ กัน (จำนวนเต็ม)",
-        )
-        ah2_clicked = ah_col2.button(
-            "AH2", disabled=not len(not_balanced),
-            help="Allocation helper 2 — ยัด Balance ที่เหลือทั้งหมดลงวันสุดท้ายที่ตั้ง Portion % ไว้วันเดียว",
-        )
-        if ah1_clicked or ah2_clicked:
-            mode = "AH1" if ah1_clicked else "AH2"
-            st.session_state[preview_key] = apply_allocation_helper(
-                preview_base, live_balance, day_headers, ah_ratio_lookup, mode
-            )
-            st.rerun()
 
         if st.button("Save to Master Plan", type="primary"):
             if len(not_balanced):
