@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 import pandas as pd
 import streamlit as st
@@ -360,6 +361,11 @@ def clear_caches():
 def upsert_items(df: pd.DataFrame):
     df = df.copy()
     df["item_id"] = df["item_id"].map(norm_code)  # กัน Excel อ่านรหัสเป็นตัวเลขแล้วได้ "xxxx.0"
+    # Unit per truck (cap_per_truck) ต้องเป็นจำนวนเต็มเสมอ (นับเป็นเคสจริง ไม่มี "ครึ่งเคสต่อคัน")
+    # ถ้าไฟล์ Excel มีทศนิยมติดมา (พิมพ์ผิด/ปัดเศษจาก Excel) จะไหลเข้าไปในการคำนวณ FTL แล้วทำให้ day case
+    # ที่จัดออกมาเป็นทศนิยมตั้งแต่ต้น กระทบไปถึง Balance/Sub total ที่ไม่มีวันลงตัวที่ 0 เป๊ะได้ — ปัดเป็น
+    # จำนวนเต็มตรงนี้จุดเดียว (ตอนบันทึกเข้า DB) กันตั้งแต่ต้นทาง ไม่ต้องไปปัดซ้ำทุกจุดที่เรียกใช้
+    df["cap_per_truck"] = df["cap_per_truck"].apply(lambda v: int(round(float(v))))
     records = df[["item_id", "description", "cap_per_truck"]].to_dict("records")
     get_client().table("item_master").upsert(records, on_conflict="item_id").execute()
 
@@ -378,6 +384,12 @@ def upsert_demand(df: pd.DataFrame, week_id: str, week_start: dt.date):
     df["destination"] = df["destination"].map(norm_code)
     df["week_id"] = week_id
     df["week_start_date"] = week_start.isoformat()
+    # Demand (weekly_qty) ต้องเป็นจำนวนเต็มเสมอเช่นกัน (หน่วยเป็นเคส) ด้วยเหตุผลเดียวกับ cap_per_truck
+    # ด้านบน — ถ้าไม่ปัดตรงนี้ Balance (Total Case - Demand) จะไม่มีวันปิดลงตัวที่ 0 เป๊ะได้เลยไม่ว่า
+    # Allocation helper จะพยายามเกลี่ยยังไงก็ตาม เพราะเป้าหมายเองไม่ใช่จำนวนเต็มตั้งแต่แรก — ใช้ "ปัดขึ้น"
+    # (ceil) ไม่ใช่ปัดเข้าใกล้ เพราะ Demand คือจำนวนที่ "ต้องการอย่างน้อยเท่านี้" ปัดลงจะทำให้จัดสินค้า
+    # น้อยกว่าที่ลูกค้าต้องการจริงแม้แค่เศษเสี้ยวเดียว ปัดขึ้นเพื่อไม่ให้ขาดเลย
+    df["weekly_qty"] = df["weekly_qty"].apply(lambda v: math.ceil(float(v)))
     df["day_ratio"] = [[20, 20, 20, 20, 20, 0]] * len(df)  # default เท่ากันทุกวัน active — ปรับได้ในแอพ
     records = df[
         ["item_id", "origin_plant", "destination", "week_id", "week_start_date", "weekly_qty", "day_ratio"]
